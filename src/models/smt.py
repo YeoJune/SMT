@@ -89,6 +89,15 @@ class StrideMemoryTransformer(nn.Module):
         
         # Tie weights with embedding
         self.lm_head.weight = self.embedding.weight
+        
+        # Gradient checkpointing (optional)
+        use_checkpointing = model_cfg.get('use_gradient_checkpointing', False)
+        if use_checkpointing:
+            if hasattr(self.transformer.transformer, 'gradient_checkpointing_enable'):
+                self.transformer.transformer.gradient_checkpointing_enable()
+                print("✅ Enabled gradient checkpointing for Transformer")
+            else:
+                print("⚠️  Gradient checkpointing not available for this transformer")
 
         print(f"✅ Created Stride Memory Transformer")
         config.summary()

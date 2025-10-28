@@ -127,36 +127,66 @@ def create_model(config: Dict[str, Any]):
     return model
 
 
-def train_step(model, batch, device, optimizer, grad_clip, pad_token_id):
+def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, scaler=None):
     """Single training step"""
     model.train()
     
     input_ids = batch["input_ids"].to(device)
     
-    # Forward pass
-    logits, aux = model(input_ids)
-    
-    # Shift for language modeling
-    shift_logits = logits[:, :-1, :].contiguous()
-    shift_labels = input_ids[:, 1:].contiguous()
-    
-    # Calculate loss (ignore padding tokens)
-    loss = F.cross_entropy(
-        shift_logits.view(-1, shift_logits.size(-1)),
-        shift_labels.view(-1),
-        ignore_index=pad_token_id,
-        reduction="mean"
-    )
-    
-    # Backward pass
-    optimizer.zero_grad()
-    loss.backward()
-    
-    # Gradient clipping
-    if grad_clip > 0:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-    
-    optimizer.step()
+    # Use AMP if scaler is provided
+    if scaler is not None:
+        with torch.cuda.amp.autocast():
+            # Forward pass
+            logits, aux = model(input_ids)
+            
+            # Shift for language modeling
+            shift_logits = logits[:, :-1, :].contiguous()
+            shift_labels = input_ids[:, 1:].contiguous()
+            
+            # Calculate loss (ignore padding tokens)
+            loss = F.cross_entropy(
+                shift_logits.view(-1, shift_logits.size(-1)),
+                shift_labels.view(-1),
+                ignore_index=pad_token_id,
+                reduction="mean"
+            )
+        
+        # Backward pass with AMP
+        optimizer.zero_grad()
+        scaler.scale(loss).backward()
+        
+        # Gradient clipping
+        if grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        # Forward pass (no AMP)
+        logits, aux = model(input_ids)
+        
+        # Shift for language modeling
+        shift_logits = logits[:, :-1, :].contiguous()
+        shift_labels = input_ids[:, 1:].contiguous()
+        
+        # Calculate loss (ignore padding tokens)
+        loss = F.cross_entropy(
+            shift_logits.view(-1, shift_logits.size(-1)),
+            shift_labels.view(-1),
+            ignore_index=pad_token_id,
+            reduction="mean"
+        )
+        
+        # Backward pass
+        optimizer.zero_grad()
+        loss.backward()
+        
+        # Gradient clipping
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        
+        optimizer.step()
     
     return loss.item(), aux
 
@@ -287,6 +317,12 @@ def main():
     model = create_model(cfg)
     model = model.to(device)
     
+    # AMP scaler (if enabled)
+    use_amp = cfg['model'].get('use_amp', False)
+    scaler = torch.cuda.amp.GradScaler() if use_amp and device.type == 'cuda' else None
+    if scaler:
+        print(f"✅ Enabled AMP (Automatic Mixed Precision)")
+    
     # Optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -326,7 +362,7 @@ def main():
             # Training step
             loss, aux = train_step(
                 model, batch, device, optimizer,
-                train_cfg["max_grad_norm"], pad_token_id
+                train_cfg["max_grad_norm"], pad_token_id, scaler
             )
             
             global_step += 1
