@@ -35,7 +35,7 @@ def main():
         # Models
         ("src/__init__.py", "Src 패키지"),
         ("src/models/__init__.py", "Models 패키지"),
-        ("src/models/stride_hybrid.py", "메인 모델"),
+        ("src/models/smt.py", "메인 모델"),
         ("src/models/window_manager.py", "윈도우 관리자"),
         
         # Components
@@ -71,7 +71,7 @@ def main():
     
     code_files = [
         "config/model_config.py",
-        "src/models/stride_hybrid.py",
+        "src/models/smt.py",
         "src/models/window_manager.py",
         "src/models/components/attention_pooling.py",
         "src/models/components/transformer.py",
@@ -99,8 +99,8 @@ def main():
         ("WindowManager", "SSM outputs + input tokens의 sliding window 관리"),
         ("WindowedTransformer", "GPT-2 기반 작은 윈도우 처리"),
         ("SSMMemory", "Mamba 기반 압축 메모리"),
-        ("StrideHybridModel", "전체 아키텍처 통합"),
-        ("StrideHybridConfig", "모델 설정 및 검증"),
+        ("StrideMemoryTransformer", "전체 아키텍처 통합"),
+        ("SMTConfig", "모델 설정 및 검증"),
         ("TrainingConfig", "학습 설정"),
     ]
     

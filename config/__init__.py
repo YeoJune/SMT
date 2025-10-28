@@ -1,3 +1,3 @@
-from .model_config import StrideHybridConfig, TrainingConfig
+from .model_config import SMTConfig, TrainingConfig
 
-__all__ = ['StrideHybridConfig', 'TrainingConfig']
+__all__ = ['SMTConfig', 'TrainingConfig']

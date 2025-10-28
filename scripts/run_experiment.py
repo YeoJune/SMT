@@ -25,8 +25,8 @@ from tqdm import tqdm
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from config.model_config import StrideHybridConfig
-from src.models.stride_hybrid import StrideHybridModel
+from config.model_config import SMTConfig
+from src.models.smt import StrideMemoryTransformer
 
 try:
     from datasets import load_dataset
@@ -92,7 +92,7 @@ def create_model(cfg):
     model_cfg = cfg["model"]
     
     # Create config
-    config = StrideHybridConfig(
+    config = SMTConfig(
         n_ssm_outputs=model_cfg["n_ssm"],
         m_input_tokens=model_cfg["m_input"],
         stride=model_cfg["stride"],
@@ -110,7 +110,7 @@ def create_model(cfg):
     )
     
     # Create model
-    model = StrideHybridModel(config)
+    model = StrideMemoryTransformer(config)
     
     # Count parameters
     params = model.count_parameters()
