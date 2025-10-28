@@ -1,4 +1,4 @@
-torch>=2.0.0
+torch>=1.12.0  # Compatible with PyTorch 1.x (tested with 1.12+)
 transformers>=4.30.0
 mamba-ssm>=1.0.0
 causal-conv1d>=1.0.0

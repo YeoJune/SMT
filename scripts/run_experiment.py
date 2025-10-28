@@ -1,11 +1,13 @@
-"""
+r"""
 SMT Experiment Runner - WikiText-2 Language Modeling
 
 Usage (PowerShell):
 python .\scripts\run_experiment.py --config configs\wikitext2_experiment.yaml
 """
-import argparse
 import os
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+import argparse
 import sys
 import yaml
 import random
@@ -215,9 +217,22 @@ def main():
     set_seed(exp_cfg["seed"])
     print(f"\n🌱 Seed: {exp_cfg['seed']}")
     
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🖥️  Device: {device}")
+    # Setup device with compatibility check
+    if torch.cuda.is_available():
+        # Check CUDA compute capability
+        try:
+            device = torch.device("cuda")
+            # Try a simple operation to verify CUDA works
+            _ = torch.zeros(1).to(device)
+            print(f"🖥️  Device: cuda (GPU: {torch.cuda.get_device_name(0)})")
+        except Exception as e:
+            # Catch all exceptions (RuntimeError, CudaError, etc.)
+            print(f"⚠️  CUDA available but incompatible: {e}")
+            print(f"⚠️  Falling back to CPU")
+            device = torch.device("cpu")
+    else:
+        device = torch.device("cpu")
+        print(f"🖥️  Device: cpu")
     
     # Create output directory
     output_dir = Path(exp_cfg["output_dir"])

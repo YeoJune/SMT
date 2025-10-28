@@ -22,7 +22,7 @@ model:
   n_layers: 12
 
   # Stride Hybrid specific
-  stride: 50 # Process 50 tokens at a time
+  stride: 16 # Process 16 tokens at a time (recommended: m/3 for 3x coverage)
   n_ssm: 15 # SSM memory tokens
   m_input: 50 # Input buffer size
 
