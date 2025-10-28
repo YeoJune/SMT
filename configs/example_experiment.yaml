@@ -1,0 +1,22 @@
+# Example experiment configuration (YAML)
+# Run with: python .\scripts\run_experiment.py --config experiments\configs\example_experiment.yaml
+
+name: toy_experiment
+seed: 42
+device: cpu
+
+data:
+  type: random
+  batch_size: 2
+  seq_len: 100
+  vocab_size: 1000
+
+model:
+  type: simple
+  embed_dim: 64
+  hidden_dim: 128
+  output_dim: 1000
+
+training:
+  steps: 1
+  save_dir: experiments/results/toy_experiment
