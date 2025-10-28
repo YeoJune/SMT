@@ -128,7 +128,6 @@ dmypy.json
 *.ckpt
 *.pkl
 *.pickle
-models/
 checkpoints/
 wandb/
 tensorboard_logs/
