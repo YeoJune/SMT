@@ -26,7 +26,7 @@ model:
   max_position_embeddings: 1024
 
   # Memory optimization
-  use_gradient_checkpointing: true # Enable gradient checkpointing
+  use_gradient_checkpointing: false # Enable gradient checkpointing
   use_amp: true # Enable automatic mixed precision (FP16)
 
   # Window configuration (Stride Memory specific)
@@ -37,7 +37,7 @@ model:
 
   # Transformer configuration
   transformer:
-    num_layers: 12
+    num_layers: 2
     num_attention_heads: 12
     intermediate_size: 3072 # Feed-forward dimension (d_ff)
     hidden_dropout_prob: 0.1
@@ -46,7 +46,7 @@ model:
 
   # SSM (Mamba) configuration
   ssm:
-    num_layers: 24
+    num_layers: 6
     state_size: 16 # d_state
     conv_kernel: 4 # d_conv
     expand_factor: 2

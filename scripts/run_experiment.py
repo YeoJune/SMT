@@ -135,7 +135,7 @@ def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, scaler=
     
     # Use AMP if scaler is provided
     if scaler is not None:
-        with torch.cuda.amp.autocast():
+        with torch.amp.autocast('cuda'):
             # Forward pass
             logits, aux = model(input_ids)
             
@@ -319,7 +319,7 @@ def main():
     
     # AMP scaler (if enabled)
     use_amp = cfg['model'].get('use_amp', False)
-    scaler = torch.cuda.amp.GradScaler() if use_amp and device.type == 'cuda' else None
+    scaler = torch.amp.GradScaler('cuda') if use_amp and device.type == 'cuda' else None
     if scaler:
         print(f"✅ Enabled AMP (Automatic Mixed Precision)")
     
