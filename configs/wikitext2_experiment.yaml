@@ -19,7 +19,7 @@ model:
   type: stride_memory_transformer
   vocab_size: 50257 # GPT-2 tokenizer vocab size
   d_model: 768
-  n_layers: 12
+  n_layers: 2
 
   # Stride Hybrid specific
   stride: 16 # Process 16 tokens at a time (recommended: m/3 for 3x coverage)
