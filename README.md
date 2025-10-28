@@ -40,7 +40,7 @@ pip install torch transformers mamba-ssm causal-conv1d datasets matplotlib
 
 ```bash
 # Run WikiText-2 experiment
-python scripts\run_experiment.py --config configs\wikitext2_experiment.yaml
+python scripts/run_experiment.py --config configs/wikitext2_experiment.yaml
 ```
 
 The experiment will:
@@ -54,10 +54,10 @@ The experiment will:
 
 ```bash
 # Visualize single experiment
-python scripts\plot_results.py --result_dir experiments\results\wikitext2_smt\20241028_123456
+python scripts/plot_results.py --result_dir experiments/results/wikitext2_smt/20241028_123456
 
 # Compare multiple experiments
-python scripts\compare_experiments.py experiments\results\wikitext2_smt
+python scripts/compare_experiments.py experiments/results/wikitext2_smt
 ```
 
 ### Output Structure
