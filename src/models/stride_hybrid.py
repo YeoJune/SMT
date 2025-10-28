@@ -13,7 +13,7 @@ from .components.ssm import SSMMemory
 from .window_manager import WindowManager, BatchedWindowManager
 
 
-class StrideHybridModel(nn.Module):
+class StrideMemoryTransformer(nn.Module):
     """
     SMT (Stride Memory Transformer)
     
@@ -33,7 +33,7 @@ class StrideHybridModel(nn.Module):
     def __init__(self, config):
         """
         Args:
-            config: StrideHybridConfig object
+            config: SMTConfig object
         """
         super().__init__()
         
@@ -77,8 +77,8 @@ class StrideHybridModel(nn.Module):
         
         # Tie weights with embedding
         self.lm_head.weight = self.embedding.weight
-        
-        print(f"✅ Created Stride-based Hybrid Model")
+
+        print(f"✅ Created Stride Memory Transformer")
         config.summary()
     
     def forward(self, input_ids, return_all_logits=False):
@@ -281,12 +281,12 @@ class StrideHybridModel(nn.Module):
 
 if __name__ == "__main__":
     # Test model
-    print("Testing StrideHybridModel...")
+    print("Testing Stride Memory Transformer...")
     
-    from config.model_config import StrideHybridConfig
+    from config.model_config import SMTConfig
     
     # Create config
-    config = StrideHybridConfig(
+    config = SMTConfig(
         n_ssm_outputs=15,
         m_input_tokens=50,
         stride=16,
@@ -297,7 +297,7 @@ if __name__ == "__main__":
     
     try:
         # Create model
-        model = StrideHybridModel(config)
+        model = StrideMemoryTransformer(config)
         
         # Test forward
         batch_size = 2

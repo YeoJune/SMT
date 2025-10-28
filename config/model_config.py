@@ -7,7 +7,7 @@ from typing import Optional
 
 
 @dataclass
-class StrideHybridConfig:
+class SMTConfig:
     """Configuration for SMT (Stride Memory Transformer) model"""
     
     # Window configuration
