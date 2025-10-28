@@ -10,7 +10,7 @@ experiment:
 data:
   dataset: wikitext
   dataset_config: wikitext-2-raw-v1 # or wikitext-2-v1 for processed
-  max_seq_length: 512
+  max_seq_length: 32
   batch_size: 1
   num_workers: 2
 
