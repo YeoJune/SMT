@@ -26,7 +26,7 @@ model:
   max_position_embeddings: 1024
 
   # Memory optimization
-  use_gradient_checkpointing: false # Enable gradient checkpointing
+  use_gradient_checkpointing: true # Enable gradient checkpointing
   use_amp: true # Enable automatic mixed precision (FP16)
 
   # Window configuration (Stride Memory specific)
@@ -68,8 +68,8 @@ data:
   max_seq_length: 512
 
   # DataLoader settings
-  train_batch_size: 1
-  eval_batch_size: 1
+  train_batch_size: 32
+  eval_batch_size: 32
   num_workers: 2
   pin_memory: true
 
