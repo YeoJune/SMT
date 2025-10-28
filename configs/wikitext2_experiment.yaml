@@ -11,7 +11,7 @@ data:
   dataset: wikitext
   dataset_config: wikitext-2-raw-v1 # or wikitext-2-v1 for processed
   max_seq_length: 512
-  batch_size: 8
+  batch_size: 1
   num_workers: 2
 
 # Model configuration
