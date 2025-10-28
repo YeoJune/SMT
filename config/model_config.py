@@ -28,6 +28,7 @@ class SMTConfig:
     # Model dimensions
     d_model: int = 768
     vocab_size: int = 50280  # GPT-2 tokenizer
+    pad_token_id: int = 50256  # GPT-2 EOS token used as pad
     
     # Transformer (GPT-2 based)
     transformer_n_layers: int = 12

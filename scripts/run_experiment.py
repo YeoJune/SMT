@@ -10,9 +10,11 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 import argparse
 import sys
 import yaml
+import json
 import random
 import time
 from pathlib import Path
+from datetime import datetime
 
 import numpy as np
 import torch
@@ -52,6 +54,22 @@ def load_config(path: str):
         return yaml.safe_load(f)
 
 
+def save_results(output_dir, results):
+    """Save experiment results to JSON"""
+    results_path = output_dir / "results.json"
+    with open(results_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+    print(f"💾 Saved results to {results_path}")
+
+
+def save_metrics_history(output_dir, metrics_history):
+    """Save training metrics history"""
+    metrics_path = output_dir / "metrics_history.json"
+    with open(metrics_path, "w", encoding="utf-8") as f:
+        json.dump(metrics_history, f, indent=2)
+    print(f"📊 Saved metrics history to {metrics_path}")
+
+
 def prepare_wikitext2_data(tokenizer, max_length=512, split="train"):
     """Load and tokenize WikiText-2 dataset"""
     print(f"\n📚 Loading WikiText-2 ({split})...")
@@ -85,7 +103,7 @@ def prepare_wikitext2_data(tokenizer, max_length=512, split="train"):
     return tokenized
 
 
-def create_model(cfg):
+def create_model(cfg, pad_token_id):
     """Create SMT model from config"""
     print("\n🔧 Creating SMT model...")
     
@@ -98,6 +116,7 @@ def create_model(cfg):
         stride=model_cfg["stride"],
         d_model=model_cfg["d_model"],
         vocab_size=model_cfg["vocab_size"],
+        pad_token_id=pad_token_id,
         transformer_n_layers=model_cfg["n_layers"],
         transformer_n_heads=model_cfg["n_heads"],
         transformer_model="gpt2",  # Use GPT-2 base
@@ -119,12 +138,11 @@ def create_model(cfg):
     return model
 
 
-def train_step(model, batch, device, optimizer, grad_clip):
+def train_step(model, batch, device, optimizer, grad_clip, pad_token_id):
     """Single training step"""
     model.train()
     
     input_ids = batch["input_ids"].to(device)
-    attention_mask = batch["attention_mask"].to(device)
     
     # Forward pass
     logits, aux = model(input_ids)
@@ -132,15 +150,14 @@ def train_step(model, batch, device, optimizer, grad_clip):
     # Shift for language modeling
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = input_ids[:, 1:].contiguous()
-    shift_mask = attention_mask[:, 1:].contiguous()
     
-    # Calculate loss (only on non-padded tokens)
+    # Calculate loss (ignore padding tokens)
     loss = F.cross_entropy(
         shift_logits.view(-1, shift_logits.size(-1)),
         shift_labels.view(-1),
-        reduction="none"
+        ignore_index=pad_token_id,
+        reduction="mean"
     )
-    loss = (loss * shift_mask.view(-1)).sum() / shift_mask.sum()
     
     # Backward pass
     optimizer.zero_grad()
@@ -156,7 +173,7 @@ def train_step(model, batch, device, optimizer, grad_clip):
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, device, max_batches=None):
+def evaluate(model, dataloader, device, pad_token_id, max_batches=None):
     """Evaluate on validation set"""
     model.eval()
     
@@ -166,7 +183,6 @@ def evaluate(model, dataloader, device, max_batches=None):
     
     for batch in tqdm(dataloader, desc="Evaluating", leave=False):
         input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
         
         # Forward pass
         logits, _ = model(input_ids)
@@ -174,17 +190,18 @@ def evaluate(model, dataloader, device, max_batches=None):
         # Shift for language modeling
         shift_logits = logits[:, :-1, :].contiguous()
         shift_labels = input_ids[:, 1:].contiguous()
-        shift_mask = attention_mask[:, 1:].contiguous()
         
-        # Calculate loss
+        # Calculate loss (ignore padding tokens)
         loss = F.cross_entropy(
             shift_logits.view(-1, shift_logits.size(-1)),
             shift_labels.view(-1),
-            reduction="none"
+            ignore_index=pad_token_id,
+            reduction="sum"
         )
         
-        batch_tokens = shift_mask.sum().item()
-        total_loss += (loss * shift_mask.view(-1)).sum().item()
+        # Count non-padding tokens
+        batch_tokens = (shift_labels != pad_token_id).sum().item()
+        total_loss += loss.item()
         total_tokens += batch_tokens
         
         n_batches += 1
@@ -192,7 +209,7 @@ def evaluate(model, dataloader, device, max_batches=None):
             break
     
     avg_loss = total_loss / total_tokens if total_tokens > 0 else float('inf')
-    perplexity = torch.exp(torch.tensor(avg_loss)).item()
+    perplexity = np.exp(avg_loss) if avg_loss < 100 else float('inf')
     
     return avg_loss, perplexity
 
@@ -234,16 +251,26 @@ def main():
         device = torch.device("cpu")
         print(f"🖥️  Device: cpu")
     
-    # Create output directory
-    output_dir = Path(exp_cfg["output_dir"])
+    # Create output directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    base_output_dir = Path(exp_cfg["output_dir"])
+    output_dir = base_output_dir / timestamp
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"📁 Output: {output_dir}")
+    
+    # Save config
+    config_save_path = output_dir / "config.yaml"
+    with open(config_save_path, "w", encoding="utf-8") as f:
+        yaml.dump(cfg, f, default_flow_style=False)
+    print(f"💾 Saved config to {config_save_path}")
     
     # Load tokenizer
     print("\n📝 Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained("gpt2")
     tokenizer.pad_token = tokenizer.eos_token
+    pad_token_id = tokenizer.pad_token_id
     print(f"✅ Vocab size: {len(tokenizer)}")
+    print(f"✅ Pad token ID: {pad_token_id}")
     
     # Prepare data
     train_dataset = prepare_wikitext2_data(
@@ -277,7 +304,7 @@ def main():
     print(f"✅ Val batches: {len(val_loader)}")
     
     # Create model
-    model = create_model(cfg)
+    model = create_model(cfg, pad_token_id)
     model = model.to(device)
     
     # Optimizer
@@ -294,6 +321,17 @@ def main():
     
     global_step = 0
     best_val_loss = float('inf')
+    best_val_ppl = float('inf')
+    start_time = time.time()
+    
+    # Metrics tracking
+    metrics_history = {
+        "train_loss": [],
+        "train_steps": [],
+        "val_loss": [],
+        "val_ppl": [],
+        "eval_steps": []
+    }
     
     train_iterator = iter(train_loader)
     
@@ -308,7 +346,7 @@ def main():
             # Training step
             loss, aux = train_step(
                 model, batch, device, optimizer,
-                train_cfg["max_grad_norm"]
+                train_cfg["max_grad_norm"], pad_token_id
             )
             
             global_step += 1
@@ -316,8 +354,13 @@ def main():
             
             # Log
             if global_step % cfg["logging"]["log_every"] == 0:
+                metrics_history["train_loss"].append(loss)
+                metrics_history["train_steps"].append(global_step)
+                
+                train_ppl = np.exp(loss) if loss < 100 else float('inf')
                 pbar.set_postfix({
                     'loss': f'{loss:.4f}',
+                    'ppl': f'{train_ppl:.2f}',
                     'writes': f"{aux['n_writes']}/{aux.get('seq_len', 0)}"
                 })
             
@@ -325,15 +368,21 @@ def main():
             if global_step % train_cfg["eval_every"] == 0:
                 print(f"\n📊 Evaluation at step {global_step}...")
                 val_loss, val_ppl = evaluate(
-                    model, val_loader, device,
+                    model, val_loader, device, pad_token_id,
                     max_batches=eval_cfg.get("max_eval_batches")
                 )
                 print(f"   Val Loss: {val_loss:.4f}")
                 print(f"   Val PPL:  {val_ppl:.2f}")
                 
+                # Track metrics
+                metrics_history["val_loss"].append(val_loss)
+                metrics_history["val_ppl"].append(val_ppl)
+                metrics_history["eval_steps"].append(global_step)
+                
                 # Save best model
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
+                    best_val_ppl = val_ppl
                     checkpoint_path = output_dir / "best_model.pt"
                     torch.save({
                         'step': global_step,
@@ -343,7 +392,7 @@ def main():
                         'val_ppl': val_ppl,
                         'config': cfg
                     }, checkpoint_path)
-                    print(f"   💾 Saved best model (PPL: {val_ppl:.2f})")
+                    print(f"   💾 Saved best model (Loss: {val_loss:.4f}, PPL: {val_ppl:.2f})")
             
             # Save checkpoint
             if global_step % train_cfg["save_every"] == 0:
@@ -356,11 +405,85 @@ def main():
                 }, checkpoint_path)
                 print(f"\n💾 Saved checkpoint at step {global_step}")
     
+    # Final evaluation on test set (using validation set as proxy)
+    print("\n" + "=" * 80)
+    print("FINAL EVALUATION")
+    print("=" * 80)
+    
+    # Load best model
+    best_checkpoint = torch.load(output_dir / "best_model.pt")
+    model.load_state_dict(best_checkpoint['model_state_dict'])
+    
+    print("📊 Evaluating best model on full validation set...")
+    final_val_loss, final_val_ppl = evaluate(
+        model, val_loader, device, pad_token_id, max_batches=None
+    )
+    print(f"   Final Val Loss: {final_val_loss:.4f}")
+    print(f"   Final Val PPL:  {final_val_ppl:.2f}")
+    
+    # Calculate training time
+    total_time = time.time() - start_time
+    hours = int(total_time // 3600)
+    minutes = int((total_time % 3600) // 60)
+    seconds = int(total_time % 60)
+    
+    # Prepare results summary
+    results = {
+        "experiment": {
+            "name": exp_cfg["name"],
+            "timestamp": timestamp,
+            "seed": exp_cfg["seed"],
+            "total_steps": global_step,
+            "training_time": f"{hours:02d}:{minutes:02d}:{seconds:02d}",
+            "training_time_seconds": total_time
+        },
+        "model": {
+            "type": cfg["model"]["type"],
+            "parameters": model.count_parameters()["total"],
+            "d_model": cfg["model"]["d_model"],
+            "n_layers": cfg["model"]["n_layers"],
+            "stride": cfg["model"]["stride"],
+            "n_ssm": cfg["model"]["n_ssm"],
+            "m_input": cfg["model"]["m_input"]
+        },
+        "data": {
+            "dataset": cfg["data"]["dataset"],
+            "max_seq_length": cfg["data"]["max_seq_length"],
+            "batch_size": cfg["data"]["batch_size"],
+            "train_samples": len(train_dataset),
+            "val_samples": len(val_dataset)
+        },
+        "training": {
+            "learning_rate": train_cfg["learning_rate"],
+            "weight_decay": train_cfg["weight_decay"],
+            "max_grad_norm": train_cfg["max_grad_norm"]
+        },
+        "results": {
+            "best_val_loss": float(best_val_loss),
+            "best_val_ppl": float(best_val_ppl),
+            "best_step": int(best_checkpoint['step']),
+            "final_val_loss": float(final_val_loss),
+            "final_val_ppl": float(final_val_ppl)
+        }
+    }
+    
+    # Save results
+    save_results(output_dir, results)
+    save_metrics_history(output_dir, metrics_history)
+    
     print("\n" + "=" * 80)
     print("TRAINING COMPLETE")
     print("=" * 80)
     print(f"✅ Best validation loss: {best_val_loss:.4f}")
+    print(f"✅ Best validation PPL:  {best_val_ppl:.2f}")
+    print(f"✅ Final validation loss: {final_val_loss:.4f}")
+    print(f"✅ Final validation PPL:  {final_val_ppl:.2f}")
+    print(f"⏱️  Training time: {hours:02d}:{minutes:02d}:{seconds:02d}")
     print(f"📁 Results saved to: {output_dir}")
+    print(f"   - config.yaml")
+    print(f"   - results.json")
+    print(f"   - metrics_history.json")
+    print(f"   - best_model.pt")
 
 
 if __name__ == "__main__":
