@@ -1,5 +1,5 @@
 """
-Integration test for Stride-based Hybrid Model
+Integration test for SMT (Stride Memory Transformer) Model
 Tests each component and the full model
 """
 
@@ -142,10 +142,9 @@ def test_ssm():
 
 
 def test_full_model():
-    """Test full model"""
-    print("\n" + "="*80)
-    print("Testing Full Stride-based Hybrid Model")
-    print("="*80)
+    """Test complete model forward and generate"""
+    print("Testing Full SMT (Stride Memory Transformer) Model")
+    print("-" * 60)
     
     # Use simple components to avoid needing pretrained models
     print("⚠️  Using simplified components (no pretrained models)")
@@ -243,7 +242,7 @@ def test_full_model():
 def run_all_tests():
     """Run all tests"""
     print("\n" + "="*80)
-    print("STRIDE-BASED HYBRID SSM-TRANSFORMER - INTEGRATION TESTS")
+    print("SMT (STRIDE MEMORY TRANSFORMER) - INTEGRATION TESTS")
     print("="*80)
     
     tests = [

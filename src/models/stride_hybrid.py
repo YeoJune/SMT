@@ -1,5 +1,5 @@
 """
-Stride-based Hybrid SSM-Transformer Model
+SMT (Stride Memory Transformer) Model
 Main architecture combining window, pooling, and SSM
 """
 
@@ -15,7 +15,7 @@ from .window_manager import WindowManager, BatchedWindowManager
 
 class StrideHybridModel(nn.Module):
     """
-    Stride-based Hybrid SSM-Transformer
+    SMT (Stride Memory Transformer)
     
     Architecture:
     1. Input → Embedding

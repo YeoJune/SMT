@@ -1,1 +1,1 @@
-"""Stride-based Hybrid SSM-Transformer"""
+"""SMT (Stride Memory Transformer)"""

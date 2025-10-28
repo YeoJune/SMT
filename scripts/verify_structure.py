@@ -14,9 +14,11 @@ def check_file_exists(filepath):
 
 
 def main():
-    print("="*80)
-    print("STRIDE-BASED HYBRID SSM-TRANSFORMER - PROJECT STRUCTURE")
-    print("="*80)
+    """Verify project structure and files"""
+    
+    print("=" * 70)
+    print("SMT (STRIDE MEMORY TRANSFORMER) - PROJECT STRUCTURE")
+    print("=" * 70)
     
     project_root = Path(__file__).parent.parent
     

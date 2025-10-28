@@ -1,15 +1,16 @@
-# Stride-based Hybrid SSM-Transformer - Quick Start
+# SMT (Stride Memory Transformer) - Quick Start
 
 ## 🚀 5분 안에 시작하기
 
 ### 1. 프로젝트 확인
 
 ```bash
-cd stride_hybrid_ssm
+cd SMT
 python scripts/verify_structure.py
 ```
 
 **예상 출력**:
+
 ```
 ✅ 프로젝트 구조 준비 완료!
 📊 총 코드 크기: 60.7 KB
@@ -23,6 +24,7 @@ pip install -r requirements.txt
 ```
 
 **필수 패키지**:
+
 - `torch>=2.0.0` - PyTorch
 - `transformers>=4.30.0` - GPT-2 모델
 - `mamba-ssm>=1.0.0` - Mamba SSM
@@ -35,6 +37,7 @@ python tests/test_integration.py
 ```
 
 **테스트 항목**:
+
 - ✅ Attention Pooling
 - ✅ Window Manager
 - ✅ Transformer
@@ -89,6 +92,7 @@ print(f"Generated shape: {generated.shape}")  # (1, 60)
 ## 📚 핵심 개념 이해하기
 
 ### Window 구조
+
 ```
 Step t의 window:
 [SSM_out[t-14], ..., SSM_out[t],  ← 15개 SSM 출력 (압축된 과거)
@@ -96,12 +100,13 @@ Step t의 window:
 ```
 
 ### Stride-based Write
+
 ```python
 for t in range(seq_len):
     # 항상: Window 처리 → Logits
     window = get_window()
     logits[t] = transformer(window)
-    
+
     # 조건부 (16 스텝마다): SSM 업데이트
     if t % 16 == 0:
         pooled = attention_pooling(window)  # 65 → 1
@@ -110,6 +115,7 @@ for t in range(seq_len):
 ```
 
 ### 효율성
+
 ```
 Window attention:  O(65²) = ~3.2M FLOPs
 Full attention:    O(4096²) = ~12.9B FLOPs
@@ -119,21 +125,23 @@ Full attention:    O(4096²) = ~12.9B FLOPs
 ## 🔧 Configuration 가이드
 
 ### 기본 설정 (WikiText-103)
+
 ```python
 config = StrideHybridConfig(
     n_ssm_outputs=15,
     m_input_tokens=50,
     stride=16,  # m/3 for 3x coverage
-    
+
     transformer_n_layers=12,  # GPT-2
     ssm_n_layers=24,          # Mamba-130M
-    
+
     d_model=768,
     vocab_size=50280,
 )
 ```
 
 ### Long-context 설정 (PG-19)
+
 ```python
 config = StrideHybridConfig(
     n_ssm_outputs=20,      # 더 많은 메모리
@@ -144,15 +152,16 @@ config = StrideHybridConfig(
 ```
 
 ### 빠른 실험 (Small)
+
 ```python
 config = StrideHybridConfig(
     n_ssm_outputs=10,
     m_input_tokens=30,
     stride=10,
-    
+
     transformer_n_layers=6,   # 작은 모델
     ssm_n_layers=12,
-    
+
     d_model=512,
 )
 ```
@@ -160,6 +169,7 @@ config = StrideHybridConfig(
 ## 📊 모델 분석
 
 ### 파라미터 확인
+
 ```python
 params = model.count_parameters()
 
@@ -168,6 +178,7 @@ for component, count in params['breakdown'].items():
 ```
 
 **출력 예시**:
+
 ```
 embedding           :   38.6M
 transformer         :  117.0M  ← GPT-2
@@ -177,6 +188,7 @@ lm_head            :    0.0M  ← Tied with embedding
 ```
 
 ### Attention 패턴 분석
+
 ```python
 from src.models.components.attention_pooling import AttentionPoolingAnalyzer
 
@@ -186,20 +198,20 @@ logits, aux = model(input_ids)
 # 분석
 if 'attention_weights' in aux:
     attn_weights = aux['attention_weights'][0]  # 첫 write step
-    
+
     stats = AttentionPoolingAnalyzer.analyze_attention(
-        attn_weights, 
-        window_size=65, 
+        attn_weights,
+        window_size=65,
         n_ssm=15
     )
-    
+
     print(f"SSM attention:   {stats['ssm_total']:.2%}")
     print(f"Input attention: {stats['input_total']:.2%}")
     print(f"Entropy:         {stats['entropy']:.2f}")
-    
+
     # Visualization
     AttentionPoolingAnalyzer.visualize_attention(
-        attn_weights, 
+        attn_weights,
         save_path='attention_pattern.png'
     )
 ```
@@ -207,6 +219,7 @@ if 'attention_weights' in aux:
 ## 🎯 다음 단계
 
 ### A. 데이터 준비
+
 ```bash
 # WikiText-103 다운로드
 python -c "from datasets import load_dataset; \
@@ -214,11 +227,13 @@ python -c "from datasets import load_dataset; \
 ```
 
 ### B. 학습 준비
+
 1. Data loader 구현 (`src/data/dataset.py`)
 2. Training loop 구현 (`src/training/trainer.py`)
 3. Optimizer 설정 (`src/training/optimizer.py`)
 
 ### C. 실험 실행
+
 ```bash
 # WikiText-103 학습
 python experiments/train_wikitext.py \
@@ -232,6 +247,7 @@ python experiments/train_wikitext.py \
 ## 🐛 문제 해결
 
 ### CUDA Out of Memory
+
 ```python
 # Batch size 줄이기
 config = StrideHybridConfig(...)
@@ -242,6 +258,7 @@ training_config = TrainingConfig(
 ```
 
 ### mamba-ssm 설치 실패
+
 ```bash
 # CUDA 없이 테스트
 python -c "from src.models.components.ssm import SimpleSSM; \
@@ -249,6 +266,7 @@ python -c "from src.models.components.ssm import SimpleSSM; \
 ```
 
 ### transformers 없이 테스트
+
 ```python
 from src.models.components.transformer import SimpleCausalTransformer
 transformer = SimpleCausalTransformer(...)  # GPT-2 없이도 작동
@@ -263,6 +281,7 @@ transformer = SimpleCausalTransformer(...)  # GPT-2 없이도 작동
 ## 💬 피드백 & 기여
 
 이슈나 개선 사항이 있으시면:
+
 1. 코드 리뷰
 2. 테스트 추가
 3. 문서 개선

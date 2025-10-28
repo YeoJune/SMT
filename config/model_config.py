@@ -1,5 +1,5 @@
 """
-Model configuration for Stride-based Hybrid SSM-Transformer
+Model configuration for SMT (Stride Memory Transformer)
 """
 
 from dataclasses import dataclass
@@ -8,7 +8,7 @@ from typing import Optional
 
 @dataclass
 class StrideHybridConfig:
-    """Configuration for Stride-based Hybrid model"""
+    """Configuration for SMT (Stride Memory Transformer) model"""
     
     # Window configuration
     n_ssm_outputs: int = 15  # Number of SSM outputs in window
@@ -67,9 +67,9 @@ class StrideHybridConfig:
     
     def summary(self):
         """Print configuration summary"""
-        print("=" * 80)
-        print("Stride-based Hybrid SSM-Transformer Configuration")
-        print("=" * 80)
+        print("=" * 60)
+        print("SMT (Stride Memory Transformer) Configuration")
+        print("=" * 60)
         print(f"\n📊 Window Configuration:")
         print(f"  - SSM outputs (n):      {self.n_ssm_outputs}")
         print(f"  - Input tokens (m):     {self.m_input_tokens}")
@@ -124,7 +124,7 @@ class TrainingConfig:
     log_dir: str = "outputs/logs"
     checkpoint_dir: str = "outputs/checkpoints"
     use_wandb: bool = False
-    wandb_project: str = "stride-hybrid-ssm"
+    wandb_project: str = "smt"
     
     # Compute
     num_workers: int = 4

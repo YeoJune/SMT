@@ -1,6 +1,7 @@
-# Stride-based Hybrid SSM-Transformer
+# SMT (Stride Memory Transformer)
 
 Implementation of a novel hybrid architecture combining:
+
 - **Fixed local Transformer window** (65 tokens) for powerful short-term processing
 - **State Space Model (Mamba)** for compressed long-term memory
 - **Stride-based update** with Attention Pooling for efficiency
@@ -51,7 +52,7 @@ logits = model(input_ids)
 ## Project Structure
 
 ```
-stride_hybrid_ssm/
+SMT/
 ├── config/              # Configuration files
 ├── src/
 │   ├── models/         # Model implementations
