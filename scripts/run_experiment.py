@@ -15,6 +15,7 @@ import random
 import time
 from pathlib import Path
 from datetime import datetime
+from typing import Dict, Any
 
 import numpy as np
 import torch
@@ -27,7 +28,7 @@ from tqdm import tqdm
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from config.model_config import SMTConfig
+from config.model_config import SMTConfig, load_config
 from src.models.smt import StrideMemoryTransformer
 
 try:
@@ -48,7 +49,7 @@ def set_seed(seed: int):
         torch.cuda.manual_seed_all(seed)
 
 
-def load_config(path: str):
+def load_config_file(path: str):
     """Load YAML configuration"""
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -70,12 +71,18 @@ def save_metrics_history(output_dir, metrics_history):
     print(f"📊 Saved metrics history to {metrics_path}")
 
 
-def prepare_wikitext2_data(tokenizer, max_length=512, split="train"):
+def prepare_wikitext2_data(config, tokenizer, split="train"):
     """Load and tokenize WikiText-2 dataset"""
     print(f"\n📚 Loading WikiText-2 ({split})...")
     
+    data_config = config['data']
+    
     # Load dataset
-    dataset = load_dataset("wikitext", "wikitext-2-raw-v1", split=split)
+    dataset = load_dataset(
+        data_config['dataset_name'], 
+        data_config['dataset_config'], 
+        split=split
+    )
     
     # Filter empty lines
     dataset = dataset.filter(lambda x: len(x["text"].strip()) > 0)
@@ -85,7 +92,7 @@ def prepare_wikitext2_data(tokenizer, max_length=512, split="train"):
         return tokenizer(
             examples["text"],
             truncation=True,
-            max_length=max_length,
+            max_length=data_config['max_seq_length'],
             padding="max_length",
             return_tensors="pt"
         )
@@ -103,33 +110,15 @@ def prepare_wikitext2_data(tokenizer, max_length=512, split="train"):
     return tokenized
 
 
-def create_model(cfg, pad_token_id):
+def create_model(config: Dict[str, Any]):
     """Create SMT model from config"""
     print("\n🔧 Creating SMT model...")
     
-    model_cfg = cfg["model"]
-    
-    # Create config
-    config = SMTConfig(
-        n_ssm_outputs=model_cfg["n_ssm"],
-        m_input_tokens=model_cfg["m_input"],
-        stride=model_cfg["stride"],
-        d_model=model_cfg["d_model"],
-        vocab_size=model_cfg["vocab_size"],
-        pad_token_id=pad_token_id,
-        transformer_n_layers=model_cfg["n_layers"],
-        transformer_n_heads=model_cfg["n_heads"],
-        transformer_model="gpt2",  # Use GPT-2 base
-        ssm_n_layers=model_cfg["n_layers"],
-        ssm_d_state=model_cfg["d_state"],
-        ssm_d_conv=model_cfg["d_conv"],
-        ssm_expand_factor=model_cfg["expand"],
-        dropout=model_cfg["dropout"],
-        device="cpu"  # Will move to device later
-    )
+    # Create config wrapper
+    smt_config = SMTConfig(config)
     
     # Create model
-    model = StrideMemoryTransformer(config)
+    model = StrideMemoryTransformer(smt_config)
     
     # Count parameters
     params = model.count_parameters()
@@ -224,11 +213,10 @@ def main():
     print("=" * 80)
     
     # Load config
-    cfg = load_config(args.config)
+    cfg = load_config_file(args.config)
     exp_cfg = cfg["experiment"]
     data_cfg = cfg["data"]
     train_cfg = cfg["training"]
-    eval_cfg = cfg["evaluation"]
     
     # Set seed
     set_seed(exp_cfg["seed"])
@@ -273,38 +261,30 @@ def main():
     print(f"✅ Pad token ID: {pad_token_id}")
     
     # Prepare data
-    train_dataset = prepare_wikitext2_data(
-        tokenizer, 
-        max_length=data_cfg["max_seq_length"],
-        split="train"
-    )
-    val_dataset = prepare_wikitext2_data(
-        tokenizer,
-        max_length=data_cfg["max_seq_length"],
-        split="validation"
-    )
+    train_dataset = prepare_wikitext2_data(cfg, tokenizer, split="train")
+    val_dataset = prepare_wikitext2_data(cfg, tokenizer, split="validation")
     
     # Create dataloaders
     train_loader = DataLoader(
         train_dataset,
-        batch_size=data_cfg["batch_size"],
+        batch_size=data_cfg["train_batch_size"],
         shuffle=True,
         num_workers=data_cfg.get("num_workers", 0),
-        pin_memory=True
+        pin_memory=data_cfg.get("pin_memory", True)
     )
     val_loader = DataLoader(
         val_dataset,
-        batch_size=eval_cfg["batch_size"],
+        batch_size=data_cfg["eval_batch_size"],
         shuffle=False,
         num_workers=data_cfg.get("num_workers", 0),
-        pin_memory=True
+        pin_memory=data_cfg.get("pin_memory", True)
     )
     
     print(f"✅ Train batches: {len(train_loader)}")
     print(f"✅ Val batches: {len(val_loader)}")
     
     # Create model
-    model = create_model(cfg, pad_token_id)
+    model = create_model(cfg)
     model = model.to(device)
     
     # Optimizer
@@ -353,7 +333,7 @@ def main():
             pbar.update(1)
             
             # Log
-            if global_step % cfg["logging"]["log_every"] == 0:
+            if global_step % cfg["logging"]["logging_steps"] == 0:
                 metrics_history["train_loss"].append(loss)
                 metrics_history["train_steps"].append(global_step)
                 
@@ -365,11 +345,11 @@ def main():
                 })
             
             # Evaluate
-            if global_step % train_cfg["eval_every"] == 0:
+            if global_step % train_cfg["eval_steps"] == 0:
                 print(f"\n📊 Evaluation at step {global_step}...")
                 val_loss, val_ppl = evaluate(
                     model, val_loader, device, pad_token_id,
-                    max_batches=eval_cfg.get("max_eval_batches")
+                    max_batches=cfg["evaluation"].get("max_eval_batches")
                 )
                 print(f"   Val Loss: {val_loss:.4f}")
                 print(f"   Val PPL:  {val_ppl:.2f}")
@@ -395,7 +375,7 @@ def main():
                     print(f"   💾 Saved best model (Loss: {val_loss:.4f}, PPL: {val_ppl:.2f})")
             
             # Save checkpoint
-            if global_step % train_cfg["save_every"] == 0:
+            if global_step % train_cfg["save_steps"] == 0:
                 checkpoint_path = output_dir / f"checkpoint_step{global_step}.pt"
                 torch.save({
                     'step': global_step,
@@ -428,6 +408,9 @@ def main():
     seconds = int(total_time % 60)
     
     # Prepare results summary
+    model_cfg = cfg['model']
+    window_cfg = model_cfg['window']
+    
     results = {
         "experiment": {
             "name": exp_cfg["name"],
@@ -438,25 +421,34 @@ def main():
             "training_time_seconds": total_time
         },
         "model": {
-            "type": cfg["model"]["type"],
+            "model_type": model_cfg["model_type"],
             "parameters": model.count_parameters()["total"],
-            "d_model": cfg["model"]["d_model"],
-            "n_layers": cfg["model"]["n_layers"],
-            "stride": cfg["model"]["stride"],
-            "n_ssm": cfg["model"]["n_ssm"],
-            "m_input": cfg["model"]["m_input"]
+            "d_model": model_cfg["d_model"],
+            "vocab_size": model_cfg["vocab_size"],
+            "window": {
+                "n_memory_tokens": window_cfg["n_memory_tokens"],
+                "n_input_tokens": window_cfg["n_input_tokens"],
+                "stride": window_cfg["stride"],
+                "total_size": window_cfg["n_memory_tokens"] + window_cfg["n_input_tokens"]
+            },
+            "transformer": cfg['model']['transformer'],
+            "ssm": cfg['model']['ssm']
         },
         "data": {
-            "dataset": cfg["data"]["dataset"],
-            "max_seq_length": cfg["data"]["max_seq_length"],
-            "batch_size": cfg["data"]["batch_size"],
+            "dataset_name": data_cfg["dataset_name"],
+            "dataset_config": data_cfg["dataset_config"],
+            "max_seq_length": data_cfg["max_seq_length"],
+            "train_batch_size": data_cfg["train_batch_size"],
+            "eval_batch_size": data_cfg["eval_batch_size"],
             "train_samples": len(train_dataset),
             "val_samples": len(val_dataset)
         },
         "training": {
+            "max_steps": train_cfg["max_steps"],
             "learning_rate": train_cfg["learning_rate"],
             "weight_decay": train_cfg["weight_decay"],
-            "max_grad_norm": train_cfg["max_grad_norm"]
+            "max_grad_norm": train_cfg["max_grad_norm"],
+            "warmup_steps": train_cfg["warmup_steps"]
         },
         "results": {
             "best_val_loss": float(best_val_loss),
@@ -464,7 +456,8 @@ def main():
             "best_step": int(best_checkpoint['step']),
             "final_val_loss": float(final_val_loss),
             "final_val_ppl": float(final_val_ppl)
-        }
+        },
+        "config": cfg
     }
     
     # Save results

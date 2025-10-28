@@ -33,47 +33,59 @@ class StrideMemoryTransformer(nn.Module):
     def __init__(self, config):
         """
         Args:
-            config: SMTConfig object
+            config: SMTConfig object (wraps YAML config dict)
         """
         super().__init__()
         
         self.config = config
-        self.n = config.n_ssm_outputs
-        self.m = config.m_input_tokens
-        self.stride = config.stride
-        self.d_model = config.d_model
+        
+        # Extract config values
+        model_cfg = config.model_config
+        window_cfg = config.window_config
+        transformer_cfg = config.transformer_config
+        ssm_cfg = config.ssm_config
+        pooling_cfg = config.pooling_config
+        
+        self.n = window_cfg['n_memory_tokens']
+        self.m = window_cfg['n_input_tokens']
+        self.stride = window_cfg['stride']
+        self.d_model = model_cfg['d_model']
+        vocab_size = model_cfg['vocab_size']
+        pad_token_id = model_cfg['pad_token_id']
         
         # Embedding (shared)
-        self.embedding = nn.Embedding(config.vocab_size, config.d_model)
+        self.embedding = nn.Embedding(vocab_size, self.d_model)
+        self.pad_token_id = pad_token_id
         
         # Transformer (GPT-2 based)
         self.transformer = WindowedTransformer(
-            d_model=config.d_model,
-            n_layers=config.transformer_n_layers,
-            n_heads=config.transformer_n_heads,
-            dropout=config.dropout,
-            pretrained_name=config.transformer_model
+            d_model=self.d_model,
+            n_layers=transformer_cfg['num_layers'],
+            n_heads=transformer_cfg['num_attention_heads'],
+            d_ff=transformer_cfg['intermediate_size'],
+            dropout=transformer_cfg['hidden_dropout_prob'],
+            pretrained_name=transformer_cfg.get('pretrained_model')
         )
         
         # Attention Pooling
         self.attention_pooling = AttentionPooling(
-            d_model=config.d_model,
-            d_k=config.d_k,
-            dropout=config.dropout
+            d_model=self.d_model,
+            d_k=pooling_cfg['query_dim'],
+            dropout=model_cfg['dropout']
         )
         
         # SSM (Mamba based)
         self.ssm = SSMMemory(
-            d_model=config.d_model,
-            n_layers=config.ssm_n_layers,
-            d_state=config.ssm_d_state,
-            d_conv=config.ssm_d_conv,
-            expand_factor=config.ssm_expand_factor,
-            pretrained_name=config.ssm_model
+            d_model=self.d_model,
+            n_layers=ssm_cfg['num_layers'],
+            d_state=ssm_cfg['state_size'],
+            d_conv=ssm_cfg['conv_kernel'],
+            expand_factor=ssm_cfg['expand_factor'],
+            pretrained_name=ssm_cfg.get('pretrained_model')
         )
         
         # LM Head
-        self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        self.lm_head = nn.Linear(self.d_model, vocab_size, bias=False)
         
         # Tie weights with embedding
         self.lm_head.weight = self.embedding.weight

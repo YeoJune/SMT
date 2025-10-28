@@ -15,35 +15,56 @@ class WindowedTransformer(nn.Module):
     No positional encoding (uses relative positions within window)
     """
     
-    def __init__(self, d_model=768, n_layers=12, n_heads=12, 
+    def __init__(self, d_model=768, n_layers=12, n_heads=12, d_ff=3072,
                  dropout=0.1, pretrained_name="gpt2"):
         """
         Args:
             d_model: Model dimension
             n_layers: Number of transformer layers
             n_heads: Number of attention heads
+            d_ff: Feed-forward dimension
             dropout: Dropout probability
-            pretrained_name: HuggingFace model name
+            pretrained_name: HuggingFace model name (or None for random init)
         """
         super().__init__()
         
         self.d_model = d_model
         self.n_layers = n_layers
         self.n_heads = n_heads
+        self.d_ff = d_ff
         
-        try:
+        if pretrained_name:
+            try:
+                from transformers import GPT2Model, GPT2Config
+            except ImportError:
+                raise ImportError("Please install transformers: pip install transformers")
+            
+            # Load pre-trained GPT-2
+            print(f"Loading pre-trained transformer from {pretrained_name}...")
+            self.transformer = GPT2Model.from_pretrained(pretrained_name)
+            
+            # Freeze embedding (we'll use external embedding)
+            self.transformer.wte.weight.requires_grad = False
+            
+            print(f"✅ Loaded {n_layers}-layer transformer (pretrained)")
+        else:
+            # Random initialization
+            print(f"Initializing random {n_layers}-layer transformer...")
             from transformers import GPT2Model, GPT2Config
-        except ImportError:
-            raise ImportError("Please install transformers: pip install transformers")
-        
-        # Load pre-trained GPT-2
-        print(f"Loading pre-trained transformer from {pretrained_name}...")
-        self.transformer = GPT2Model.from_pretrained(pretrained_name)
-        
-        # Freeze embedding (we'll use external embedding)
-        self.transformer.wte.weight.requires_grad = False
-        
-        print(f"✅ Loaded {n_layers}-layer transformer")
+            
+            config = GPT2Config(
+                vocab_size=1,  # Not used (we use inputs_embeds)
+                n_positions=1024,
+                n_embd=d_model,
+                n_layer=n_layers,
+                n_head=n_heads,
+                n_inner=d_ff,
+                resid_pdrop=dropout,
+                embd_pdrop=dropout,
+                attn_pdrop=dropout,
+            )
+            self.transformer = GPT2Model(config)
+            print(f"✅ Initialized {n_layers}-layer transformer (random)")
         
     def forward(self, x, attention_mask=None):
         """

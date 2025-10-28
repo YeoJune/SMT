@@ -1,62 +1,125 @@
 # WikiText-2 Language Modeling Experiment
 # Run with: python .\scripts\run_experiment.py --config configs\wikitext2_experiment.yaml
 
+# ============================================================================
+# Experiment Metadata
+# ============================================================================
 experiment:
   name: wikitext2_smt
   seed: 42
   output_dir: experiments/results/wikitext2_smt
 
-# Data configuration
-data:
-  dataset: wikitext
-  dataset_config: wikitext-2-raw-v1 # or wikitext-2-v1 for processed
-  max_seq_length: 32
-  batch_size: 1
-  num_workers: 2
-
-# Model configuration
+# ============================================================================
+# Model Architecture Configuration
+# ============================================================================
 model:
-  type: stride_memory_transformer
-  vocab_size: 50257 # GPT-2 tokenizer vocab size
+  # Model type
+  model_type: stride_memory_transformer
+
+  # Vocabulary
+  vocab_size: 50257 # GPT-2 tokenizer
+  pad_token_id: 50256 # GPT-2 EOS as padding
+
+  # Core dimensions
   d_model: 768
-  n_layers: 2
-
-  # Stride Hybrid specific
-  stride: 16 # Process 16 tokens at a time (recommended: m/3 for 3x coverage)
-  n_ssm: 15 # SSM memory tokens
-  m_input: 50 # Input buffer size
-
-  # Transformer settings
-  n_heads: 12
-  d_ff: 3072
   dropout: 0.1
+  max_position_embeddings: 1024
 
-  # SSM settings
-  d_state: 16
-  d_conv: 4
-  expand: 2
+  # Window configuration (Stride Memory specific)
+  window:
+    n_memory_tokens: 15 # Number of SSM memory tokens (n)
+    n_input_tokens: 50 # Number of recent input tokens (m)
+    stride: 16 # Update frequency (recommended: m/3)
 
-# Training configuration
+  # Transformer configuration
+  transformer:
+    num_layers: 6
+    num_attention_heads: 12
+    intermediate_size: 3072 # Feed-forward dimension (d_ff)
+    hidden_dropout_prob: 0.1
+    attention_dropout_prob: 0.1
+    pretrained_model: gpt2 # or null for random init
+
+  # SSM (Mamba) configuration
+  ssm:
+    num_layers: 6
+    state_size: 16 # d_state
+    conv_kernel: 4 # d_conv
+    expand_factor: 2
+    pretrained_model: state-spaces/mamba-130m-hf # or null
+
+  # Attention Pooling configuration
+  attention_pooling:
+    query_dim: 768 # d_k for pooling attention
+
+# ============================================================================
+# Dataset Configuration
+# ============================================================================
+data:
+  # Dataset source
+  dataset_name: wikitext
+  dataset_config: wikitext-2-raw-v1 # or wikitext-2-v1 for tokenized
+
+  # Preprocessing
+  max_seq_length: 512
+
+  # DataLoader settings
+  train_batch_size: 8
+  eval_batch_size: 4
+  num_workers: 2
+  pin_memory: true
+
+# ============================================================================
+# Training Configuration
+# ============================================================================
 training:
+  # Training steps
   max_steps: 10000
-  eval_every: 500
-  save_every: 1000
+  gradient_accumulation_steps: 1
+
+  # Optimization
   learning_rate: 5.0e-4
   weight_decay: 0.01
-  warmup_steps: 500
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_epsilon: 1.0e-8
   max_grad_norm: 1.0
+
+  # Learning rate schedule
+  lr_scheduler_type: linear # linear, cosine, constant
+  warmup_steps: 500
+
+  # Checkpointing
+  save_strategy: steps
+  save_steps: 1000
+  save_total_limit: 3
+
+  # Evaluation
+  evaluation_strategy: steps
+  eval_steps: 500
 
   # Mixed precision
   fp16: false
   bf16: false
 
-# Evaluation configuration
+# ============================================================================
+# Evaluation Configuration
+# ============================================================================
 evaluation:
-  batch_size: 4
-  max_eval_batches: 100 # Limit eval for speed
+  max_eval_batches: 100 # Limit for faster evaluation during training
+  eval_on_start: false
 
-# Logging
+# ============================================================================
+# Logging Configuration
+# ============================================================================
 logging:
-  use_wandb: false
-  log_every: 100
-  project_name: smt-wikitext2
+  # Console logging
+  logging_steps: 100
+
+  # Weights & Biases
+  report_to: [] # ["wandb"] to enable
+  wandb_project: smt-wikitext2
+  wandb_run_name: null # Auto-generated if null
+
+  # Log level
+  log_level: info # debug, info, warning, error
