@@ -70,16 +70,19 @@ class AttentionPooling(nn.Module):
         
         # Attention weights
         attn_weights = F.softmax(attn_scores, dim=-1)  # (B, W)
-        attn_weights = self.dropout(attn_weights)
+        
+        # Apply dropout to attention weights during training
+        attn_weights_dropped = self.dropout(attn_weights)
         
         # Weighted sum of original window (not keys!)
         # window: (B, W, D)
-        # attn_weights: (B, W) -> (B, W, 1)
+        # attn_weights_dropped: (B, W) -> (B, W, 1)
         pooled = torch.bmm(
-            attn_weights.unsqueeze(1),  # (B, 1, W)
+            attn_weights_dropped.unsqueeze(1),  # (B, 1, W)
             window  # (B, W, D)
         ).squeeze(1)  # (B, D)
         
+        # Return original attn_weights (before dropout) for analysis
         return pooled, attn_weights
     
     def extra_repr(self):
