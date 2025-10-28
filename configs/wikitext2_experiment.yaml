@@ -1,0 +1,62 @@
+# WikiText-2 Language Modeling Experiment
+# Run with: python .\scripts\run_experiment.py --config configs\wikitext2_experiment.yaml
+
+experiment:
+  name: wikitext2_smt
+  seed: 42
+  output_dir: experiments/results/wikitext2_smt
+
+# Data configuration
+data:
+  dataset: wikitext
+  dataset_config: wikitext-2-raw-v1 # or wikitext-2-v1 for processed
+  max_seq_length: 512
+  batch_size: 8
+  num_workers: 2
+
+# Model configuration
+model:
+  type: stride_memory_transformer
+  vocab_size: 50257 # GPT-2 tokenizer vocab size
+  d_model: 768
+  n_layers: 12
+
+  # Stride Hybrid specific
+  stride: 50 # Process 50 tokens at a time
+  n_ssm: 15 # SSM memory tokens
+  m_input: 50 # Input buffer size
+
+  # Transformer settings
+  n_heads: 12
+  d_ff: 3072
+  dropout: 0.1
+
+  # SSM settings
+  d_state: 16
+  d_conv: 4
+  expand: 2
+
+# Training configuration
+training:
+  max_steps: 10000
+  eval_every: 500
+  save_every: 1000
+  learning_rate: 5.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
+  max_grad_norm: 1.0
+
+  # Mixed precision
+  fp16: false
+  bf16: false
+
+# Evaluation configuration
+evaluation:
+  batch_size: 4
+  max_eval_batches: 100 # Limit eval for speed
+
+# Logging
+logging:
+  use_wandb: false
+  log_every: 100
+  project_name: smt-wikitext2
