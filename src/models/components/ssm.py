@@ -177,39 +177,32 @@ class SSMMemory(nn.Module):
             return self._forward_parallel(x)
         else:
             return self._forward_recurrent(x)
-    
-    def _forward_recurrent(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Recurrent forward with state (efficient).
         
-        Uses Mamba's step() method to update states in-place.
-        """
+    def _forward_recurrent(self, x: torch.Tensor) -> torch.Tensor:
         for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
-            # Residual connection
             residual = x
-            
-            # Pre-norm
             x_norm = norm(x)
             
-            x_norm = x_norm.unsqueeze(1)
-                
-            # Mamba step (updates states in-place)
+            # unsqueeze
+            x_norm = x_norm.unsqueeze(1)  # (B, D) → (B, 1, D)
+            
+            # dtype 맞추기
+            x_norm = x_norm.to(dtype=self._conv_states[i].dtype)
+            
             x_out, _, _ = layer.step(
                 x_norm,
                 self._conv_states[i],
                 self._ssm_states[i],
             )
-
-            x_out = x_out.squeeze(1)  # (B, 1, D) → (B, D)
             
-            # Residual
+            # dtype 원복 및 squeeze
+            x_out = x_out.to(dtype=residual.dtype).squeeze(1)
+            
             x = residual + x_out
         
-        # Final norm
         x = self.norm_f(x)
-        
         return x
-    
+
     def _forward_parallel(self, x: torch.Tensor) -> torch.Tensor:
         """
         Parallel forward without state (fallback).
