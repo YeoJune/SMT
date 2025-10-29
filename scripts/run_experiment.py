@@ -136,8 +136,8 @@ def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, scaler=
     # Use AMP if scaler is provided
     if scaler is not None:
         with torch.amp.autocast('cuda'):
-            # Forward pass
-            logits, aux = model(input_ids)
+            # Forward pass (with return_aux=True)
+            logits, aux = model(input_ids, return_aux=True)
             
             # Shift for language modeling
             shift_logits = logits[:, :-1, :].contiguous()
@@ -163,8 +163,8 @@ def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, scaler=
         scaler.step(optimizer)
         scaler.update()
     else:
-        # Forward pass (no AMP)
-        logits, aux = model(input_ids)
+        # Forward pass (with return_aux=True, no AMP)
+        logits, aux = model(input_ids, return_aux=True)
         
         # Shift for language modeling
         shift_logits = logits[:, :-1, :].contiguous()
@@ -203,8 +203,8 @@ def evaluate(model, dataloader, device, pad_token_id, max_batches=None):
     for batch in tqdm(dataloader, desc="Evaluating", leave=False):
         input_ids = batch["input_ids"].to(device)
         
-        # Forward pass
-        logits, _ = model(input_ids)
+        # Forward pass (return_aux=False, only returns logits)
+        logits = model(input_ids, return_aux=False)
         
         # Shift for language modeling
         shift_logits = logits[:, :-1, :].contiguous()
@@ -377,7 +377,7 @@ def main():
                 pbar.set_postfix({
                     'loss': f'{loss:.4f}',
                     'ppl': f'{train_ppl:.2f}',
-                    'writes': f"{aux['n_writes']}/{aux.get('seq_len', 0)}"
+                    'writes': aux.get('n_writes', 0)
                 })
             
             # Evaluate

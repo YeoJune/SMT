@@ -46,8 +46,15 @@ def print_comparison_table(experiments):
         timestamp = exp["dir_name"]
         steps = exp["experiment"]["total_steps"]
         params = f"{exp['model']['parameters']/1e6:.1f}M"
-        stride = exp["model"]["stride"]
-        n_m = f"{exp['model']['n_ssm']}/{exp['model']['m_input']}"
+        
+        # Handle both old and new config formats
+        if "stride" in exp["model"]:
+            stride = exp["model"]["stride"]
+            n_m = f"{exp['model']['n_ssm']}/{exp['model']['m_input']}"
+        else:
+            stride = exp["model"]["window"]["stride"]
+            n_m = f"{exp['model']['window']['n_memory_tokens']}/{exp['model']['window']['n_input_tokens']}"
+        
         best_ppl = exp["results"]["best_val_ppl"]
         final_ppl = exp["results"]["final_val_ppl"]
         time = exp["experiment"]["training_time"]
@@ -76,7 +83,13 @@ def plot_comparison(experiments, output_path):
         with open(metrics_path, "r") as f:
             metrics = json.load(f)
         
-        label = f"{exp['dir_name']} (stride={exp['model']['stride']})"
+        # Handle both old and new config formats
+        if "stride" in exp["model"]:
+            stride = exp["model"]["stride"]
+        else:
+            stride = exp["model"]["window"]["stride"]
+        
+        label = f"{exp['dir_name']} (stride={stride})"
         
         # Plot loss
         if metrics["eval_steps"]:

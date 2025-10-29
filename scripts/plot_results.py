@@ -56,13 +56,31 @@ def print_results_summary(results):
     print(f"   Training Time: {results['experiment']['training_time']}")
     
     print(f"\n🔧 Model Configuration:")
-    print(f"   Type: {results['model']['type']}")
-    print(f"   Parameters: {results['model']['parameters']/1e6:.1f}M")
-    print(f"   d_model: {results['model']['d_model']}")
-    print(f"   n_layers: {results['model']['n_layers']}")
-    print(f"   stride: {results['model']['stride']}")
-    print(f"   n_ssm: {results['model']['n_ssm']}")
-    print(f"   m_input: {results['model']['m_input']}")
+    model_info = results['model']
+    
+    # Handle both old and new config formats
+    if "type" in model_info:
+        print(f"   Type: {model_info['type']}")
+    elif "model_type" in model_info:
+        print(f"   Type: {model_info['model_type']}")
+    
+    print(f"   Parameters: {model_info['parameters']/1e6:.1f}M")
+    print(f"   d_model: {model_info['d_model']}")
+    
+    if "n_layers" in model_info:
+        print(f"   n_layers: {model_info['n_layers']}")
+    elif "transformer" in model_info:
+        print(f"   n_layers: {model_info['transformer']['num_layers']}")
+    
+    if "stride" in model_info:
+        print(f"   stride: {model_info['stride']}")
+        print(f"   n_ssm: {model_info['n_ssm']}")
+        print(f"   m_input: {model_info['m_input']}")
+    elif "window" in model_info:
+        print(f"   stride: {model_info['window']['stride']}")
+        print(f"   n_memory_tokens: {model_info['window']['n_memory_tokens']}")
+        print(f"   n_input_tokens: {model_info['window']['n_input_tokens']}")
+        print(f"   total_window_size: {model_info['window']['total_size']}")
     
     print(f"\n📚 Dataset:")
     print(f"   Name: {results['data']['dataset']}")

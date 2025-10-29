@@ -1,160 +1,43 @@
 """
 Window Manager
-Manages the sliding window of SSM outputs and input tokens
+Manages sliding window of SSM outputs and input tokens for TBPTT
 """
 
 import torch
 import torch.nn as nn
-from collections import deque
-from typing import Optional, Tuple, List
+from typing import Optional, Dict, Tuple
 
 
 class WindowManager:
     """
     Manages sliding window: [n SSM outputs | m input tokens]
     
-    Window structure at step t:
-        window[t] = [ssm_out[t-n+1], ..., ssm_out[t],  # n SSM outputs
-                     x[t-m+1], ..., x[t]]              # m input tokens
-    
+    Window structure:
+        [ssm_out[-n], ..., ssm_out[-1] | x[-m], ..., x[-1]]
+        
     Operations:
-    1. append_input: Add new input token
-    2. append_ssm: Add new SSM output (only on write steps)
-    3. get_window: Return current window for Transformer
+    - append_input(x): Add new input token
+    - append_ssm(ssm_out): Add new SSM output (stride steps only)
+    - get_window(): Return current window for Transformer
+    
+    State automatically carries across chunk boundaries for TBPTT.
     """
     
-    def __init__(self, n_ssm_outputs, m_input_tokens, d_model, device='cuda'):
-        """
-        Args:
-            n_ssm_outputs: Number of SSM outputs to keep
-            m_input_tokens: Number of input tokens to keep
-            d_model: Model dimension
-            device: Device to store tensors
-        """
-        self.n = n_ssm_outputs
-        self.m = m_input_tokens
-        self.d_model = d_model
-        self.device = device
-        
-        # Use deque for efficient rotation
-        self.ssm_outputs = deque(maxlen=n_ssm_outputs)
-        self.input_tokens = deque(maxlen=m_input_tokens)
-        
-        # Initialize with zeros
-        self._initialize()
-        
-    def _initialize(self):
-        """Initialize with zero vectors"""
-        zero_vec = torch.zeros(self.d_model, device=self.device)
-        
-        # Fill SSM outputs with zeros
-        for _ in range(self.n):
-            self.ssm_outputs.append(zero_vec.clone())
-        
-        # Input tokens will be filled as we process
-        # Start empty and fill up to m
-        
-    def append_input(self, x):
-        """
-        Add new input token embedding
-        
-        Args:
-            x: (d_model,) - Single token embedding
-        """
-        if x.dim() == 1:
-            self.input_tokens.append(x)
-        else:
-            # Batch dimension exists, take first item
-            self.input_tokens.append(x[0])
-    
-    def append_ssm(self, ssm_output):
-        """
-        Add new SSM output (only called on write steps)
-        
-        Args:
-            ssm_output: (d_model,) - SSM output vector
-        """
-        if ssm_output.dim() == 1:
-            self.ssm_outputs.append(ssm_output)
-        else:
-            self.ssm_outputs.append(ssm_output[0])
-    
-    def get_window(self, batch_size=1):
-        """
-        Get current window for Transformer
-        
-        Returns:
-            window: (batch_size, window_size, d_model)
-        """
-        # Stack SSM outputs
-        if len(self.ssm_outputs) > 0:
-            ssm_part = torch.stack(list(self.ssm_outputs), dim=0)  # (n, d_model)
-        else:
-            ssm_part = torch.zeros(self.n, self.d_model, device=self.device)
-        
-        # Stack input tokens (may be less than m initially)
-        if len(self.input_tokens) > 0:
-            input_part = torch.stack(list(self.input_tokens), dim=0)  # (len, d_model)
-            # Pad if needed
-            if len(self.input_tokens) < self.m:
-                padding = torch.zeros(
-                    self.m - len(self.input_tokens), 
-                    self.d_model, 
-                    device=self.device
-                )
-                input_part = torch.cat([padding, input_part], dim=0)
-        else:
-            input_part = torch.zeros(self.m, self.d_model, device=self.device)
-        
-        # Concatenate
-        window = torch.cat([ssm_part, input_part], dim=0)  # (n+m, d_model)
-        
-        # Add batch dimension
-        window = window.unsqueeze(0).expand(batch_size, -1, -1)
-        
-        return window
-    
-    def reset(self):
-        """Reset to initial state"""
-        self._initialize()
-    
-    @property
-    def window_size(self):
-        return self.n + self.m
-    
-    def get_state(self):
-        """Get current state for checkpointing"""
-        return {
-            'ssm_outputs': list(self.ssm_outputs),
-            'input_tokens': list(self.input_tokens),
-        }
-    
-    def load_state(self, state):
-        """Load state from checkpoint"""
-        self.ssm_outputs = deque(state['ssm_outputs'], maxlen=self.n)
-        self.input_tokens = deque(state['input_tokens'], maxlen=self.m)
-    
-    def __repr__(self):
-        return (f"WindowManager(n={self.n}, m={self.m}, "
-                f"window_size={self.window_size}, "
-                f"ssm_filled={len(self.ssm_outputs)}/{self.n}, "
-                f"input_filled={len(self.input_tokens)}/{self.m})")
-
-
-class BatchedWindowManager:
-    """
-    Batched version of WindowManager for parallel processing
-    Manages windows for entire batch at once
-    """
-    
-    def __init__(self, batch_size, n_ssm_outputs, m_input_tokens, d_model, device='cuda'):
+    def __init__(
+        self,
+        batch_size: int,
+        n_ssm_outputs: int,
+        m_input_tokens: int,
+        d_model: int,
+        device: torch.device = torch.device('cuda'),
+    ):
         """
         Args:
             batch_size: Batch size
-            n_ssm_outputs: Number of SSM outputs to keep
-            m_input_tokens: Number of input tokens to keep  
+            n_ssm_outputs: Number of SSM outputs to keep in window
+            m_input_tokens: Number of input tokens to keep in window
             d_model: Model dimension
-            device: Device to store tensors
+            device: Device for tensors
         """
         self.batch_size = batch_size
         self.n = n_ssm_outputs
@@ -162,118 +45,198 @@ class BatchedWindowManager:
         self.d_model = d_model
         self.device = device
         
-        # Store as tensors for efficiency
+        # Circular buffers (efficient for sliding window)
         # Shape: (batch, capacity, d_model)
         self.ssm_outputs = torch.zeros(
-            batch_size, n_ssm_outputs, d_model, device=device
+            batch_size, n_ssm_outputs, d_model,
+            device=device, dtype=torch.float32,
         )
         self.input_tokens = torch.zeros(
-            batch_size, m_input_tokens, d_model, device=device
+            batch_size, m_input_tokens, d_model,
+            device=device, dtype=torch.float32,
         )
         
-        # Track current positions
-        self.ssm_pos = 0
-        self.input_pos = 0
-        
-    def append_input(self, x):
+        # Track fill status (for initialization)
+        self.ssm_filled = 0
+        self.input_filled = 0
+    
+    def append_input(self, x: torch.Tensor):
         """
-        Add new input token embeddings for batch
+        Add new input token embedding.
+        
+        Rotates left: oldest token is discarded, new token added at end.
         
         Args:
-            x: (batch, d_model) - Input embeddings
+            x: (batch, d_model) - New input token embedding
         """
-        # Rotate left and add new
+        assert x.shape == (self.batch_size, self.d_model), \
+            f"Expected ({self.batch_size}, {self.d_model}), got {x.shape}"
+        
+        # Rotate left and append
         self.input_tokens = torch.cat([
             self.input_tokens[:, 1:, :],  # Remove oldest
-            x.unsqueeze(1)  # Add newest
+            x.unsqueeze(1),               # Add newest
         ], dim=1)
         
-        self.input_pos = min(self.input_pos + 1, self.m)
+        self.input_filled = min(self.input_filled + 1, self.m)
     
-    def append_ssm(self, ssm_output):
+    def append_ssm(self, ssm_output: torch.Tensor):
         """
-        Add new SSM outputs for batch
+        Add new SSM output (only called at stride steps).
+        
+        Rotates left: oldest SSM output is discarded, new one added.
         
         Args:
-            ssm_output: (batch, d_model) - SSM outputs
+            ssm_output: (batch, d_model) - New SSM output
         """
-        # Rotate left and add new
+        assert ssm_output.shape == (self.batch_size, self.d_model), \
+            f"Expected ({self.batch_size}, {self.d_model}), got {ssm_output.shape}"
+        
+        # Rotate left and append
         self.ssm_outputs = torch.cat([
-            self.ssm_outputs[:, 1:, :],  # Remove oldest
-            ssm_output.unsqueeze(1)  # Add newest
+            self.ssm_outputs[:, 1:, :],   # Remove oldest
+            ssm_output.unsqueeze(1),      # Add newest
         ], dim=1)
         
-        self.ssm_pos = min(self.ssm_pos + 1, self.n)
+        self.ssm_filled = min(self.ssm_filled + 1, self.n)
     
-    def get_window(self):
+    def get_window(self) -> torch.Tensor:
         """
-        Get current windows for entire batch
+        Get current window for Transformer.
         
         Returns:
-            window: (batch, n+m, d_model)
+            window: (batch, n+m, d_model) - Current window
+            
+        Note:
+            During initialization (first few steps), some positions may be zero.
+            This is expected and handled naturally by the Transformer.
         """
         # Concatenate SSM outputs and input tokens
         window = torch.cat([self.ssm_outputs, self.input_tokens], dim=1)
+        
         return window
     
     def reset(self):
-        """Reset all windows"""
+        """Reset to initial state (zeros)."""
         self.ssm_outputs.zero_()
         self.input_tokens.zero_()
-        self.ssm_pos = 0
-        self.input_pos = 0
+        self.ssm_filled = 0
+        self.input_filled = 0
+    
+    def get_state(self) -> Dict[str, torch.Tensor]:
+        """
+        Get current state for chunk boundaries.
+        
+        Returns:
+            state: Dict with ssm_outputs and input_tokens
+            
+        Note:
+            Tensors are cloned but NOT detached - they maintain gradient flow.
+            The SSM internal states are detached separately.
+        """
+        return {
+            'ssm_outputs': self.ssm_outputs.clone(),
+            'input_tokens': self.input_tokens.clone(),
+            'ssm_filled': self.ssm_filled,
+            'input_filled': self.input_filled,
+        }
+    
+    def set_state(self, state: Dict[str, torch.Tensor]):
+        """
+        Set state from checkpoint.
+        
+        Args:
+            state: Dict from get_state()
+        """
+        self.ssm_outputs = state['ssm_outputs']
+        self.input_tokens = state['input_tokens']
+        self.ssm_filled = state['ssm_filled']
+        self.input_filled = state['input_filled']
     
     @property
-    def window_size(self):
+    def window_size(self) -> int:
+        """Total window size."""
         return self.n + self.m
     
-    def __repr__(self):
-        return (f"BatchedWindowManager(batch={self.batch_size}, "
-                f"n={self.n}, m={self.m}, window_size={self.window_size})")
+    def __repr__(self) -> str:
+        return (
+            f"WindowManager(batch={self.batch_size}, "
+            f"n={self.n}, m={self.m}, "
+            f"window_size={self.window_size}, "
+            f"filled={self.ssm_filled}/{self.n} + {self.input_filled}/{self.m})"
+        )
 
 
 if __name__ == "__main__":
-    # Test WindowManager
-    print("Testing WindowManager...")
+    print("="*80)
+    print("Testing WindowManager")
+    print("="*80)
     
-    n, m = 15, 50
+    batch_size = 2
+    n_ssm = 15
+    m_input = 50
     d_model = 768
-    device = 'cpu'
+    stride = 16
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    manager = WindowManager(n, m, d_model, device)
-    print(f"✅ Created: {manager}")
+    print(f"\nConfiguration:")
+    print(f"  Batch size: {batch_size}")
+    print(f"  SSM outputs: {n_ssm}")
+    print(f"  Input tokens: {m_input}")
+    print(f"  Window size: {n_ssm + m_input}")
+    print(f"  Stride: {stride}")
+    
+    # Create manager
+    wm = WindowManager(
+        batch_size=batch_size,
+        n_ssm_outputs=n_ssm,
+        m_input_tokens=m_input,
+        d_model=d_model,
+        device=device,
+    )
+    
+    print(f"\n✅ Created: {wm}")
     
     # Simulate processing
+    print("\n[Simulation: 100 steps with stride=16]")
+    
     for step in range(100):
-        # Add input
-        x = torch.randn(d_model, device=device)
-        manager.append_input(x)
+        # Add input token
+        x = torch.randn(batch_size, d_model, device=device)
+        wm.append_input(x)
         
-        # Write every 16 steps
-        if step % 16 == 0:
-            ssm_out = torch.randn(d_model, device=device)
-            manager.append_ssm(ssm_out)
+        # Add SSM output at stride steps
+        if step > 0 and step % stride == 0:
+            ssm_out = torch.randn(batch_size, d_model, device=device)
+            wm.append_ssm(ssm_out)
+            print(f"  Step {step:3d}: Added SSM output")
         
         # Get window
-        window = manager.get_window(batch_size=2)
+        window = wm.get_window()
+        assert window.shape == (batch_size, n_ssm + m_input, d_model)
         
-        if step % 20 == 0:
-            print(f"Step {step}: window shape = {window.shape}")
+        if step % 25 == 0:
+            print(f"  Step {step:3d}: Window shape = {window.shape}, {wm}")
     
-    print(f"\n✅ Final state: {manager}")
+    print(f"\n✅ Final state: {wm}")
     
-    # Test batched version
-    print("\nTesting BatchedWindowManager...")
-    batch_size = 4
-    batched_manager = BatchedWindowManager(batch_size, n, m, d_model, device)
+    # Test state save/load
+    print("\n[Test: State save/load]")
+    state = wm.get_state()
+    print(f"  Saved state: {state.keys()}")
     
-    for step in range(10):
-        x = torch.randn(batch_size, d_model, device=device)
-        batched_manager.append_input(x)
-        
-        if step % 3 == 0:
-            ssm_out = torch.randn(batch_size, d_model, device=device)
-            batched_manager.append_ssm(ssm_out)
+    # Modify
+    wm.append_input(torch.randn(batch_size, d_model, device=device))
     
-    window = batched_manager.get_window()
-    print(f"✅ Batched window shape: {window.shape}")
+    # Restore
+    wm.set_state(state)
+    print(f"  ✅ State restored")
+    
+    # Test reset
+    print("\n[Test: Reset]")
+    wm.reset()
+    print(f"  ✅ Reset: {wm}")
+    
+    print("\n" + "="*80)
+    print("All tests passed!")
+    print("="*80)

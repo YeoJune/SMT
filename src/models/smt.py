@@ -1,45 +1,54 @@
 """
-SMT (Stride Memory Transformer) Model
-Main architecture combining window, pooling, and SSM
+SMT (Stride Memory Transformer) with TBPTT
+Efficient long-context processing with truncated backpropagation
 """
 
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint
 from typing import Optional, Dict, Tuple
 
+from .components.ssm import SSMMemory
+from .window_manager import WindowManager
 from .components.attention_pooling import AttentionPooling
 from .components.transformer import WindowedTransformer
-from .components.ssm import SSMMemory
-from .window_manager import WindowManager, BatchedWindowManager
 
 
 class StrideMemoryTransformer(nn.Module):
     """
-    SMT (Stride Memory Transformer)
+    Stride Memory Transformer with TBPTT
     
     Architecture:
-    1. Input → Embedding
-    2. Window = [n SSM outputs | m recent tokens]
-    3. Transformer processes window → logits
-    4. If step % stride == 0:
-         - Attention Pooling compresses window
-         - SSM updates with pooled vector
-         - Add SSM output to window
-    5. Always rotate input tokens
+        Input → Window [n SSM outputs | m input tokens]
+        → Transformer → Logits
+        
+        Every stride steps:
+        → Attention Pool window → SSM compress → Add to window
     
-    Efficiency: Only 65 tokens in attention, 6.25% SSM updates
+    Memory efficiency:
+        - Transformer only sees small window (e.g., 65 tokens)
+        - Chunks process with truncated gradients
+        - SSM state carries long-range information
+    
+    Usage:
+        # Training with long context
+        model = StrideMemoryTransformer(config)
+        logits = model(input_ids, chunk_size=512)  # TBPTT enabled
+        
+        # Inference
+        generated = model.generate(prompt, max_new_tokens=1000)
     """
     
     def __init__(self, config):
         """
         Args:
-            config: SMTConfig object (wraps YAML config dict)
+            config: Configuration object with model parameters
         """
         super().__init__()
         
         self.config = config
         
-        # Extract config values
+        # Extract config
         model_cfg = config.model_config
         window_cfg = config.window_config
         transformer_cfg = config.transformer_config
@@ -50,142 +59,281 @@ class StrideMemoryTransformer(nn.Module):
         self.m = window_cfg['n_input_tokens']
         self.stride = window_cfg['stride']
         self.d_model = model_cfg['d_model']
-        vocab_size = model_cfg['vocab_size']
-        pad_token_id = model_cfg['pad_token_id']
+        self.vocab_size = model_cfg['vocab_size']
+        self.pad_token_id = model_cfg['pad_token_id']
+        
+        # Use gradient checkpointing
+        self.use_checkpointing = model_cfg.get('use_gradient_checkpointing', False)
         
         # Embedding (shared)
-        self.embedding = nn.Embedding(vocab_size, self.d_model)
-        self.pad_token_id = pad_token_id
+        self.embedding = nn.Embedding(self.vocab_size, self.d_model)
         
-        # Transformer (GPT-2 based)
+        # Components
         self.transformer = WindowedTransformer(
             d_model=self.d_model,
             n_layers=transformer_cfg['num_layers'],
             n_heads=transformer_cfg['num_attention_heads'],
             d_ff=transformer_cfg['intermediate_size'],
             dropout=transformer_cfg['hidden_dropout_prob'],
-            pretrained_name=transformer_cfg.get('pretrained_model')
+            pretrained_name=transformer_cfg.get('pretrained_model'),
         )
         
-        # Attention Pooling
         self.attention_pooling = AttentionPooling(
             d_model=self.d_model,
             d_k=pooling_cfg['query_dim'],
-            dropout=model_cfg['dropout']
+            dropout=model_cfg['dropout'],
         )
         
-        # SSM (Mamba based)
         self.ssm = SSMMemory(
             d_model=self.d_model,
             n_layers=ssm_cfg['num_layers'],
             d_state=ssm_cfg['state_size'],
             d_conv=ssm_cfg['conv_kernel'],
             expand_factor=ssm_cfg['expand_factor'],
-            pretrained_name=ssm_cfg.get('pretrained_model')
         )
         
-        # LM Head
-        self.lm_head = nn.Linear(self.d_model, vocab_size, bias=False)
-        
-        # Tie weights with embedding
+        # LM head (tied with embedding)
+        self.lm_head = nn.Linear(self.d_model, self.vocab_size, bias=False)
         self.lm_head.weight = self.embedding.weight
         
-        # Gradient checkpointing (optional)
-        use_checkpointing = model_cfg.get('use_gradient_checkpointing', False)
-        if use_checkpointing:
-            if hasattr(self.transformer.transformer, 'gradient_checkpointing_enable'):
-                self.transformer.transformer.gradient_checkpointing_enable()
-                print("✅ Enabled gradient checkpointing for Transformer")
-            else:
-                print("⚠️  Gradient checkpointing not available for this transformer")
-
-        print(f"✅ Created Stride Memory Transformer")
-        config.summary()
+        print(f"✅ SMT: window={self.n}+{self.m}, stride={self.stride}")
+        if self.use_checkpointing:
+            print(f"✅ Gradient checkpointing enabled")
     
-    def forward(self, input_ids, return_all_logits=False):
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        chunk_size: Optional[int] = None,
+        return_aux: bool = False,
+    ) -> torch.Tensor:
         """
-        Forward pass (training mode - processes entire sequence)
+        Forward pass with optional TBPTT chunking.
         
         Args:
             input_ids: (batch, seq_len) - Input token IDs
-            return_all_logits: If True, return logits for all positions
-            
+            chunk_size: If provided, use TBPTT with this chunk size
+                       If None, process entire sequence (may OOM on long sequences)
+            return_aux: If True, return auxiliary information
+        
         Returns:
-            logits: (batch, seq_len, vocab_size) - Predictions
-            aux_outputs: Dict with auxiliary information
+            logits: (batch, seq_len, vocab_size)
+            aux (optional): Dict with auxiliary outputs
         """
         B, S = input_ids.shape
         device = input_ids.device
         
-        # Embed all tokens
-        embeddings = self.embedding(input_ids)  # (B, S, D)
+        # Decide whether to use chunking
+        if chunk_size is None or S <= chunk_size:
+            # Process entire sequence (no TBPTT)
+            return self._forward_full(input_ids, return_aux)
+        else:
+            # Process with TBPTT
+            return self._forward_chunked(input_ids, chunk_size, return_aux)
+    
+    def _forward_full(
+        self,
+        input_ids: torch.Tensor,
+        return_aux: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Dict]]:
+        """
+        Process entire sequence without chunking.
         
-        # Initialize window manager (batched)
-        window_mgr = BatchedWindowManager(
+        Use for short sequences or when full gradients are needed.
+        """
+        B, S = input_ids.shape
+        device = input_ids.device
+        
+        # Initialize
+        self.ssm.init_cache(batch_size=B, device=device)
+        window_mgr = WindowManager(
             batch_size=B,
             n_ssm_outputs=self.n,
             m_input_tokens=self.m,
             d_model=self.d_model,
-            device=device
+            device=device,
         )
         
-        # Store outputs
+        # Embed
+        embeddings = self.embedding(input_ids)  # (B, S, D)
+        
+        # Process each step
         all_logits = []
         write_steps = []
-        attention_weights_history = []
         
-        # Process each position
         for t in range(S):
-            # Get current token embedding
+            # Add input token to window
             x_t = embeddings[:, t, :]  # (B, D)
-            
-            # Add to window
             window_mgr.append_input(x_t)
             
-            # Get current window
+            # Get window and process
             window = window_mgr.get_window()  # (B, n+m, D)
             
-            # Transformer processes window
-            transformer_out = self.transformer(window)  # (B, n+m, D)
+            # Transformer (with optional checkpointing)
+            if self.use_checkpointing and self.training:
+                transformer_out = checkpoint(
+                    self.transformer, window, use_reentrant=False
+                )
+            else:
+                transformer_out = self.transformer(window)
             
-            # Get logits from last position (current token)
+            # Get logits from last position
             logits_t = self.lm_head(transformer_out[:, -1, :])  # (B, vocab)
             all_logits.append(logits_t)
             
-            # Stride-based write
-            if t % self.stride == 0 and t > 0:
-                # Attention pooling
-                pooled, attn_weights = self.attention_pooling(window)  # (B, D)
-                
-                # SSM update
-                ssm_output = self.ssm(pooled)  # (B, D)
-                
-                # Add SSM output to window
+            # Stride-based SSM update
+            if t > 0 and t % self.stride == 0:
+                pooled, _ = self.attention_pooling(window)
+                ssm_output = self.ssm(pooled)
                 window_mgr.append_ssm(ssm_output)
-                
-                # Track statistics
                 write_steps.append(t)
-                attention_weights_history.append(attn_weights.detach())
         
         # Stack logits
         logits = torch.stack(all_logits, dim=1)  # (B, S, vocab)
         
-        # Auxiliary outputs
-        aux_outputs = {
-            'write_steps': write_steps,
-            'n_writes': len(write_steps),
-            'write_frequency': len(write_steps) / S if S > 0 else 0.0,
-        }
+        # Cleanup
+        self.ssm.clear_cache()
         
-        if len(attention_weights_history) > 0:
-            aux_outputs['attention_weights'] = torch.stack(attention_weights_history, dim=0)
+        if return_aux:
+            aux = {
+                'write_steps': write_steps,
+                'n_writes': len(write_steps),
+            }
+            return logits, aux
         
-        return logits, aux_outputs
+        return logits
     
-    def generate(self, input_ids, max_new_tokens=100, temperature=1.0, 
-                 top_k=None, top_p=None):
+    def _forward_chunked(
+        self,
+        input_ids: torch.Tensor,
+        chunk_size: int,
+        return_aux: bool = False,
+    ) -> Tuple[torch.Tensor, Optional[Dict]]:
         """
-        Auto-regressive generation
+        Process sequence with TBPTT chunking.
+        
+        Chunks are processed with full gradients internally,
+        but gradients are truncated at chunk boundaries.
+        """
+        B, S = input_ids.shape
+        device = input_ids.device
+        
+        # Initialize
+        self.ssm.init_cache(batch_size=B, device=device)
+        window_mgr = WindowManager(
+            batch_size=B,
+            n_ssm_outputs=self.n,
+            m_input_tokens=self.m,
+            d_model=self.d_model,
+            device=device,
+        )
+        
+        # Embed all at once (memory efficient - no gradients stored)
+        embeddings = self.embedding(input_ids)  # (B, S, D)
+        
+        # Process in chunks
+        all_logits = []
+        all_write_steps = []
+        
+        for chunk_start in range(0, S, chunk_size):
+            chunk_end = min(chunk_start + chunk_size, S)
+            
+            # Process this chunk
+            chunk_logits, write_steps = self._process_chunk(
+                embeddings[:, chunk_start:chunk_end, :],
+                window_mgr,
+                global_offset=chunk_start,
+            )
+            
+            all_logits.append(chunk_logits)
+            all_write_steps.extend(write_steps)
+            
+            # Truncate gradients at chunk boundary
+            if chunk_end < S:
+                self.ssm.detach_cache()
+                # Window manager state continues (no detach needed)
+        
+        # Concatenate all chunks
+        logits = torch.cat(all_logits, dim=1)  # (B, S, vocab)
+        
+        # Cleanup
+        self.ssm.clear_cache()
+        
+        if return_aux:
+            aux = {
+                'write_steps': all_write_steps,
+                'n_writes': len(all_write_steps),
+                'n_chunks': (S + chunk_size - 1) // chunk_size,
+            }
+            return logits, aux
+        
+        return logits
+    
+    def _process_chunk(
+        self,
+        chunk_embeddings: torch.Tensor,
+        window_mgr: WindowManager,
+        global_offset: int,
+    ) -> Tuple[torch.Tensor, list]:
+        """
+        Process a single chunk with full gradients.
+        
+        Args:
+            chunk_embeddings: (B, chunk_len, D) - Embedded tokens for this chunk
+            window_mgr: Window manager (state carries from previous chunk)
+            global_offset: Global step offset (for stride calculation)
+        
+        Returns:
+            logits: (B, chunk_len, vocab)
+            write_steps: List of global steps where SSM was updated
+        """
+        B, chunk_len, D = chunk_embeddings.shape
+        
+        chunk_logits = []
+        write_steps = []
+        
+        for t in range(chunk_len):
+            global_t = global_offset + t
+            
+            # Add input token
+            x_t = chunk_embeddings[:, t, :]
+            window_mgr.append_input(x_t)
+            
+            # Get window
+            window = window_mgr.get_window()
+            
+            # Transformer (with optional checkpointing)
+            if self.use_checkpointing and self.training:
+                transformer_out = checkpoint(
+                    self.transformer, window, use_reentrant=False
+                )
+            else:
+                transformer_out = self.transformer(window)
+            
+            # Logits
+            logits_t = self.lm_head(transformer_out[:, -1, :])
+            chunk_logits.append(logits_t)
+            
+            # SSM update (stride-based)
+            if global_t > 0 and global_t % self.stride == 0:
+                pooled, _ = self.attention_pooling(window)
+                ssm_output = self.ssm(pooled)
+                window_mgr.append_ssm(ssm_output)
+                write_steps.append(global_t)
+        
+        logits = torch.stack(chunk_logits, dim=1)
+        return logits, write_steps
+    
+    @torch.no_grad()
+    def generate(
+        self,
+        input_ids: torch.Tensor,
+        max_new_tokens: int = 100,
+        temperature: float = 1.0,
+        top_k: Optional[int] = None,
+        top_p: Optional[float] = None,
+    ) -> torch.Tensor:
+        """
+        Auto-regressive generation.
         
         Args:
             input_ids: (batch, prefix_len) - Prefix tokens
@@ -193,83 +341,54 @@ class StrideMemoryTransformer(nn.Module):
             temperature: Sampling temperature
             top_k: Top-k sampling
             top_p: Nucleus sampling
-            
+        
         Returns:
-            generated_ids: (batch, prefix_len + max_new_tokens)
+            generated: (batch, prefix_len + max_new_tokens)
         """
         self.eval()
         B = input_ids.shape[0]
         device = input_ids.device
         
-        # Initialize with prefix
-        generated = input_ids.clone()
-        
-        # Initialize window manager
-        window_mgr = BatchedWindowManager(
+        # Initialize
+        self.ssm.init_cache(batch_size=B, device=device)
+        window_mgr = WindowManager(
             batch_size=B,
             n_ssm_outputs=self.n,
             m_input_tokens=self.m,
             d_model=self.d_model,
-            device=device
+            device=device,
         )
         
+        generated = input_ids.clone()
+        
         # Process prefix
-        with torch.no_grad():
-            embeddings = self.embedding(input_ids)
-            for t in range(input_ids.shape[1]):
-                x_t = embeddings[:, t, :]
-                window_mgr.append_input(x_t)
-                
-                if t % self.stride == 0 and t > 0:
-                    window = window_mgr.get_window()
-                    pooled, _ = self.attention_pooling(window)
-                    ssm_output = self.ssm(pooled)
-                    window_mgr.append_ssm(ssm_output)
+        embeddings = self.embedding(input_ids)
+        for t in range(input_ids.shape[1]):
+            x_t = embeddings[:, t, :]
+            window_mgr.append_input(x_t)
+            
+            if t > 0 and t % self.stride == 0:
+                window = window_mgr.get_window()
+                pooled, _ = self.attention_pooling(window)
+                ssm_output = self.ssm(pooled)
+                window_mgr.append_ssm(ssm_output)
         
         # Generate new tokens
-        for _ in range(max_new_tokens):
-            # Get window
+        for step in range(max_new_tokens):
+            # Get window and process
             window = window_mgr.get_window()
+            transformer_out = self.transformer(window)
+            logits = self.lm_head(transformer_out[:, -1, :])
             
-            # Transformer forward
-            with torch.no_grad():
-                transformer_out = self.transformer(window)
-                logits = self.lm_head(transformer_out[:, -1, :])  # (B, vocab)
-            
-            # Sample next token
-            if temperature > 0:
-                logits = logits / temperature
-                
-                if top_k is not None:
-                    v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
-                    logits[logits < v[:, [-1]]] = -float('Inf')
-                
-                if top_p is not None:
-                    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-                    cumulative_probs = torch.cumsum(
-                        torch.softmax(sorted_logits, dim=-1), dim=-1
-                    )
-                    sorted_indices_to_remove = cumulative_probs > top_p
-                    sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
-                    sorted_indices_to_remove[:, 0] = 0
-                    
-                    for i in range(B):
-                        indices_to_remove = sorted_indices[i][sorted_indices_to_remove[i]]
-                        logits[i, indices_to_remove] = -float('Inf')
-                
-                probs = torch.softmax(logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-            else:
-                next_token = torch.argmax(logits, dim=-1, keepdim=True)
-            
-            # Append to generated
+            # Sample
+            next_token = self._sample(logits, temperature, top_k, top_p)
             generated = torch.cat([generated, next_token], dim=1)
             
             # Update window
             next_embedding = self.embedding(next_token).squeeze(1)
             window_mgr.append_input(next_embedding)
             
-            # Stride-based write
+            # SSM update
             current_step = generated.shape[1] - 1
             if current_step % self.stride == 0:
                 window = window_mgr.get_window()
@@ -277,71 +396,66 @@ class StrideMemoryTransformer(nn.Module):
                 ssm_output = self.ssm(pooled)
                 window_mgr.append_ssm(ssm_output)
         
+        # Cleanup
+        self.ssm.clear_cache()
+        
         return generated
     
-    def count_parameters(self):
-        """Count trainable parameters"""
+    def _sample(
+        self,
+        logits: torch.Tensor,
+        temperature: float,
+        top_k: Optional[int],
+        top_p: Optional[float],
+    ) -> torch.Tensor:
+        """Sample next token from logits."""
+        if temperature == 0:
+            return torch.argmax(logits, dim=-1, keepdim=True)
+        
+        logits = logits / temperature
+        
+        # Top-k
+        if top_k is not None:
+            v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+            logits[logits < v[:, [-1]]] = -float('Inf')
+        
+        # Top-p (nucleus)
+        if top_p is not None:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cumulative_probs = torch.cumsum(
+                torch.softmax(sorted_logits, dim=-1), dim=-1
+            )
+            
+            # Remove tokens with cumulative probability above threshold
+            sorted_indices_to_remove = cumulative_probs > top_p
+            sorted_indices_to_remove[:, 1:] = sorted_indices_to_remove[:, :-1].clone()
+            sorted_indices_to_remove[:, 0] = 0
+            
+            for i in range(logits.shape[0]):
+                indices_to_remove = sorted_indices[i][sorted_indices_to_remove[i]]
+                logits[i, indices_to_remove] = -float('Inf')
+        
+        # Sample
+        probs = torch.softmax(logits, dim=-1)
+        next_token = torch.multinomial(probs, num_samples=1)
+        
+        return next_token
+    
+    def count_parameters(self) -> Dict[str, int]:
+        """Count parameters by component."""
         total = sum(p.numel() for p in self.parameters())
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         
-        # Break down by component
         breakdown = {
             'embedding': sum(p.numel() for p in self.embedding.parameters()),
             'transformer': sum(p.numel() for p in self.transformer.parameters()),
             'attention_pooling': sum(p.numel() for p in self.attention_pooling.parameters()),
             'ssm': sum(p.numel() for p in self.ssm.parameters()),
-            'lm_head': 0  # Tied with embedding
+            'lm_head': 0,  # Tied
         }
         
         return {
             'total': total,
             'trainable': trainable,
-            'breakdown': breakdown
+            'breakdown': breakdown,
         }
-
-
-if __name__ == "__main__":
-    # Test model
-    print("Testing Stride Memory Transformer...")
-    
-    from config.model_config import SMTConfig
-    
-    # Create config
-    config = SMTConfig(
-        n_ssm_outputs=15,
-        m_input_tokens=50,
-        stride=16,
-        transformer_n_layers=12,
-        ssm_n_layers=24,
-        device='cpu'
-    )
-    
-    try:
-        # Create model
-        model = StrideMemoryTransformer(config)
-        
-        # Test forward
-        batch_size = 2
-        seq_len = 100
-        input_ids = torch.randint(0, config.vocab_size, (batch_size, seq_len))
-        
-        print(f"\nForward pass...")
-        logits, aux = model(input_ids)
-        
-        print(f"✅ Input:  {input_ids.shape}")
-        print(f"✅ Output: {logits.shape}")
-        print(f"✅ Writes: {aux['n_writes']} / {seq_len} steps ({aux['write_frequency']:.2%})")
-        
-        # Count parameters
-        params = model.count_parameters()
-        print(f"\n📊 Parameters:")
-        print(f"  Total:      {params['total']/1e6:.1f}M")
-        print(f"  Trainable:  {params['trainable']/1e6:.1f}M")
-        print(f"\n  Breakdown:")
-        for name, count in params['breakdown'].items():
-            print(f"    {name:20s}: {count/1e6:6.1f}M")
-        
-    except Exception as e:
-        print(f"❌ Error: {e}")
-        import traceback
-        traceback.print_exc()

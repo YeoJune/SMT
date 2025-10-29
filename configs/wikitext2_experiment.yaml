@@ -23,7 +23,6 @@ model:
   # Core dimensions
   d_model: 768
   dropout: 0.1
-  max_position_embeddings: 1024
 
   # Memory optimization
   use_gradient_checkpointing: true # Enable gradient checkpointing
@@ -37,20 +36,18 @@ model:
 
   # Transformer configuration
   transformer:
-    num_layers: 2
+    num_layers: 6
     num_attention_heads: 12
     intermediate_size: 3072 # Feed-forward dimension (d_ff)
     hidden_dropout_prob: 0.1
-    attention_dropout_prob: 0.1
     pretrained_model: gpt2 # or null for random init
 
   # SSM (Mamba) configuration
   ssm:
-    num_layers: 6
+    num_layers: 12
     state_size: 16 # d_state
     conv_kernel: 4 # d_conv
     expand_factor: 2
-    pretrained_model: state-spaces/mamba-130m-hf # or null
 
   # Attention Pooling configuration
   attention_pooling:
