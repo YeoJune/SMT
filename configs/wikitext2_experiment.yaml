@@ -25,8 +25,8 @@ model:
   dropout: 0.1
 
   # Memory optimization
-  use_gradient_checkpointing: true # Enable gradient checkpointing
-  use_amp: true # Enable automatic mixed precision (FP16)
+  use_gradient_checkpointing: false # Enable gradient checkpointing
+  use_amp: false # Enable automatic mixed precision (FP16)
 
   # Window configuration (Stride Memory specific)
   window:
