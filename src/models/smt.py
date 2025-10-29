@@ -280,7 +280,11 @@ class StrideMemoryTransformer(nn.Module):
         global_offset: int,
     ) -> Tuple[torch.Tensor, list]:
         """
-        Process a single chunk with full gradients.
+        Process a single chunk with parallelized transformer inference.
+        
+        Phase 1: SSM updates (sequential, but infrequent)
+        Phase 2: Construct all windows in parallel
+        Phase 3: Batch transformer processing
         
         Args:
             chunk_embeddings: (B, chunk_len, D) - Embedded tokens for this chunk
@@ -293,39 +297,71 @@ class StrideMemoryTransformer(nn.Module):
         """
         B, chunk_len, D = chunk_embeddings.shape
         
-        chunk_logits = []
+        # Phase 1: SSM updates and track SSM state timeline
+        ssm_outputs_timeline = []  # SSM state at each step
         write_steps = []
         
+        current_ssm_outputs = window_mgr.ssm_outputs.clone()
+        
         for t in range(chunk_len):
-            global_t = global_offset + t
-            
-            # Add input token
             x_t = chunk_embeddings[:, t, :]
             window_mgr.append_input(x_t)
             
-            # Get window
-            window = window_mgr.get_window()
+            # Save current SSM state for this step
+            ssm_outputs_timeline.append(current_ssm_outputs.clone())
             
-            # Transformer (with optional checkpointing)
-            if self.use_checkpointing and self.training:
-                transformer_out = checkpoint(
-                    self.transformer, window, use_reentrant=False
-                )
-            else:
-                transformer_out = self.transformer(window)
-            
-            # Logits
-            logits_t = self.lm_head(transformer_out[:, -1, :])
-            chunk_logits.append(logits_t)
-            
-            # SSM update (stride-based)
+            # SSM update at stride steps
+            global_t = global_offset + t
             if global_t > 0 and global_t % self.stride == 0:
+                window = window_mgr.get_window()
                 pooled, _ = self.attention_pooling(window)
                 ssm_output = self.ssm(pooled)
                 window_mgr.append_ssm(ssm_output)
+                current_ssm_outputs = window_mgr.ssm_outputs.clone()
                 write_steps.append(global_t)
         
-        logits = torch.stack(chunk_logits, dim=1)
+        # Phase 2: Construct all windows in parallel
+        # Get initial input tokens from window manager
+        initial_inputs = window_mgr.input_tokens[:, -(self.m-1):, :].contiguous()
+        
+        # Pad chunk embeddings with initial inputs
+        padded_inputs = torch.cat([initial_inputs, chunk_embeddings], dim=1)
+        # (B, m-1+chunk_len, D)
+        
+        # Create sliding windows using unfold
+        input_windows = padded_inputs.unfold(dimension=1, size=self.m, step=1)
+        # (B, chunk_len, D, m)
+        input_windows = input_windows.permute(0, 1, 3, 2).contiguous()
+        # (B, chunk_len, m, D)
+        
+        # Stack SSM outputs for all steps
+        ssm_outputs_batch = torch.stack(ssm_outputs_timeline, dim=1)
+        # (B, chunk_len, n, D)
+        
+        # Combine SSM outputs and input windows
+        all_windows = torch.cat([ssm_outputs_batch, input_windows], dim=2)
+        # (B, chunk_len, n+m, D)
+        
+        # Phase 3: Batch transformer processing
+        # Reshape to (B*chunk_len, n+m, D) for batch processing
+        batch_windows = all_windows.view(B * chunk_len, self.n + self.m, D)
+        
+        if self.use_checkpointing and self.training:
+            transformer_out = checkpoint(
+                self.transformer, batch_windows, use_reentrant=False
+            )
+        else:
+            transformer_out = self.transformer(batch_windows)
+        
+        # Get last position output: (B*chunk_len, n+m, D) → (B*chunk_len, D)
+        last_hidden = transformer_out[:, -1, :]
+        
+        # Compute logits
+        logits = self.lm_head(last_hidden)  # (B*chunk_len, vocab)
+        
+        # Reshape back: (B*chunk_len, vocab) → (B, chunk_len, vocab)
+        logits = logits.view(B, chunk_len, -1)
+        
         return logits, write_steps
     
     @torch.no_grad()
