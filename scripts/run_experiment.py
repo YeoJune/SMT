@@ -127,7 +127,7 @@ def create_model(config: Dict[str, Any]):
     return model
 
 
-def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, scaler=None):
+def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, chunk_size=None, scaler=None):
     """Single training step"""
     model.train()
     
@@ -136,8 +136,8 @@ def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, scaler=
     # Use AMP if scaler is provided
     if scaler is not None:
         with torch.amp.autocast('cuda'):
-            # Forward pass (with return_aux=True)
-            logits, aux = model(input_ids, return_aux=True)
+            # Forward pass (with return_aux=True, and optional chunk_size for TBPTT)
+            logits, aux = model(input_ids, chunk_size=chunk_size, return_aux=True)
             
             # Shift for language modeling
             shift_logits = logits[:, :-1, :].contiguous()
@@ -163,8 +163,8 @@ def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, scaler=
         scaler.step(optimizer)
         scaler.update()
     else:
-        # Forward pass (with return_aux=True, no AMP)
-        logits, aux = model(input_ids, return_aux=True)
+        # Forward pass (with return_aux=True, and optional chunk_size for TBPTT, no AMP)
+        logits, aux = model(input_ids, chunk_size=chunk_size, return_aux=True)
         
         # Shift for language modeling
         shift_logits = logits[:, :-1, :].contiguous()
@@ -323,6 +323,13 @@ def main():
     if scaler:
         print(f"✅ Enabled AMP (Automatic Mixed Precision)")
     
+    # Get chunk_size for TBPTT
+    chunk_size = train_cfg.get('chunk_size', None)
+    if chunk_size:
+        print(f"✅ TBPTT enabled with chunk_size={chunk_size}")
+    else:
+        print(f"⚠️  TBPTT disabled (processing full sequences)")
+    
     # Optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
@@ -362,7 +369,7 @@ def main():
             # Training step
             loss, aux = train_step(
                 model, batch, device, optimizer,
-                train_cfg["max_grad_norm"], pad_token_id, scaler
+                train_cfg["max_grad_norm"], pad_token_id, chunk_size, scaler
             )
             
             global_step += 1
@@ -481,10 +488,10 @@ def main():
         },
         "training": {
             "max_steps": train_cfg["max_steps"],
+            "chunk_size": train_cfg.get("chunk_size"),
             "learning_rate": train_cfg["learning_rate"],
             "weight_decay": train_cfg["weight_decay"],
-            "max_grad_norm": train_cfg["max_grad_norm"],
-            "warmup_steps": train_cfg["warmup_steps"]
+            "max_grad_norm": train_cfg["max_grad_norm"]
         },
         "results": {
             "best_val_loss": float(best_val_loss),

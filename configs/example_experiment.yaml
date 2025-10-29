@@ -67,27 +67,16 @@ data:
 # ============================================================================
 training:
   max_steps: 100 # Just 100 steps for testing
-  gradient_accumulation_steps: 1
+
+  # TBPTT (Truncated Backpropagation Through Time)
+  chunk_size: 64 # Small chunks for testing
 
   learning_rate: 1.0e-3
   weight_decay: 0.01
-  adam_beta1: 0.9
-  adam_beta2: 0.999
-  adam_epsilon: 1.0e-8
   max_grad_norm: 1.0
 
-  lr_scheduler_type: linear
-  warmup_steps: 10
-
-  save_strategy: steps
   save_steps: 50
-  save_total_limit: 2
-
-  evaluation_strategy: steps
   eval_steps: 50
-
-  fp16: false
-  bf16: false
 
 # ============================================================================
 # Evaluation Configuration

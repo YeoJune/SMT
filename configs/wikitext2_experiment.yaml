@@ -76,32 +76,20 @@ data:
 training:
   # Training steps
   max_steps: 10000
-  gradient_accumulation_steps: 1
+
+  # TBPTT (Truncated Backpropagation Through Time)
+  chunk_size: 128 # Process sequences in chunks (null to disable)
 
   # Optimization
   learning_rate: 5.0e-4
   weight_decay: 0.01
-  adam_beta1: 0.9
-  adam_beta2: 0.999
-  adam_epsilon: 1.0e-8
   max_grad_norm: 1.0
 
-  # Learning rate schedule
-  lr_scheduler_type: linear # linear, cosine, constant
-  warmup_steps: 500
-
   # Checkpointing
-  save_strategy: steps
   save_steps: 1000
-  save_total_limit: 3
 
   # Evaluation
-  evaluation_strategy: steps
   eval_steps: 500
-
-  # Mixed precision
-  fp16: false
-  bf16: false
 
 # ============================================================================
 # Evaluation Configuration
