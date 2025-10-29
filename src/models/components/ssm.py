@@ -198,6 +198,9 @@ class SSMMemory(nn.Module):
                 self._ssm_states[i],
             )
             
+            if x_out.dim() == 3:
+                x_out = x_out.squeeze(1)
+            
             # Residual
             x = residual + x_out
         
