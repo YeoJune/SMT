@@ -211,8 +211,11 @@ class StrideMemoryTransformer(nn.Module):
         """
         Process sequence with TBPTT chunking.
         
-        Chunks are processed with full gradients internally,
-        but gradients are truncated at chunk boundaries.
+        IMPORTANT: This returns DETACHED logits!
+        For training with TBPTT, you should NOT call backward on the output.
+        Instead, use the training loop's TBPTT-aware training step.
+        
+        For inference, this is fine since no gradients are needed.
         """
         B, S = input_ids.shape
         device = input_ids.device
@@ -227,9 +230,6 @@ class StrideMemoryTransformer(nn.Module):
             device=device,
         )
         
-        # Embed all at once (memory efficient - no gradients stored)
-        embeddings = self.embedding(input_ids)  # (B, S, D)
-        
         # Process in chunks
         all_logits = []
         all_write_steps = []
@@ -237,22 +237,27 @@ class StrideMemoryTransformer(nn.Module):
         for chunk_start in range(0, S, chunk_size):
             chunk_end = min(chunk_start + chunk_size, S)
             
+            # Embed only this chunk
+            chunk_input_ids = input_ids[:, chunk_start:chunk_end]
+            chunk_embeddings = self.embedding(chunk_input_ids)
+            
             # Process this chunk
             chunk_logits, write_steps = self._process_chunk(
-                embeddings[:, chunk_start:chunk_end, :],
+                chunk_embeddings,
                 window_mgr,
                 global_offset=chunk_start,
             )
             
-            all_logits.append(chunk_logits)
+            # Store DETACHED logits (for output only, no gradients)
+            all_logits.append(chunk_logits.detach())
             all_write_steps.extend(write_steps)
             
             # Truncate gradients at chunk boundary
             if chunk_end < S:
                 self.ssm.detach_cache()
-                # Window manager state continues (no detach needed)
+                window_mgr.detach()
         
-        # Concatenate all chunks
+        # Concatenate all chunks (all detached)
         logits = torch.cat(all_logits, dim=1)  # (B, S, vocab)
         
         # Cleanup

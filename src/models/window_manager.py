@@ -123,6 +123,16 @@ class WindowManager:
         self.ssm_filled = 0
         self.input_filled = 0
     
+    def detach(self):
+        """
+        Detach state from computation graph for TBPTT.
+        
+        Call this at chunk boundaries to truncate gradients.
+        The state values are preserved but gradient flow is cut.
+        """
+        self.ssm_outputs = self.ssm_outputs.detach()
+        self.input_tokens = self.input_tokens.detach()
+    
     def get_state(self) -> Dict[str, torch.Tensor]:
         """
         Get current state for chunk boundaries.

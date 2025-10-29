@@ -128,34 +128,38 @@ def create_model(config: Dict[str, Any]):
 
 
 def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, chunk_size=None, scaler=None):
-    """Single training step"""
+    """
+    Single training step with proper TBPTT support.
+    
+    If chunk_size is provided, processes sequence in chunks with
+    immediate backward pass for each chunk (true TBPTT).
+    """
     model.train()
     
     input_ids = batch["input_ids"].to(device)
+    B, S = input_ids.shape
     
-    # Use AMP if scaler is provided
+    # Without chunking: standard training
+    if chunk_size is None or S <= chunk_size:
+        return train_step_standard(model, input_ids, device, optimizer, 
+                                   grad_clip, pad_token_id, scaler)
+    
+    # With chunking: TBPTT training
+    return train_step_tbptt(model, input_ids, device, optimizer,
+                           grad_clip, pad_token_id, chunk_size, scaler)
+
+
+def train_step_standard(model, input_ids, device, optimizer, grad_clip, pad_token_id, scaler):
+    """Standard training without TBPTT."""
+    # Forward pass
     if scaler is not None:
         with torch.amp.autocast('cuda'):
-            # Forward pass (with return_aux=True, and optional chunk_size for TBPTT)
-            logits, aux = model(input_ids, chunk_size=chunk_size, return_aux=True)
-            
-            # Shift for language modeling
-            shift_logits = logits[:, :-1, :].contiguous()
-            shift_labels = input_ids[:, 1:].contiguous()
-            
-            # Calculate loss (ignore padding tokens)
-            loss = F.cross_entropy(
-                shift_logits.view(-1, shift_logits.size(-1)),
-                shift_labels.view(-1),
-                ignore_index=pad_token_id,
-                reduction="mean"
-            )
+            logits, aux = model(input_ids, chunk_size=None, return_aux=True)
+            loss = compute_loss(logits, input_ids, pad_token_id)
         
-        # Backward pass with AMP
         optimizer.zero_grad()
         scaler.scale(loss).backward()
         
-        # Gradient clipping
         if grad_clip > 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
@@ -163,32 +167,127 @@ def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, chunk_s
         scaler.step(optimizer)
         scaler.update()
     else:
-        # Forward pass (with return_aux=True, and optional chunk_size for TBPTT, no AMP)
-        logits, aux = model(input_ids, chunk_size=chunk_size, return_aux=True)
+        logits, aux = model(input_ids, chunk_size=None, return_aux=True)
+        loss = compute_loss(logits, input_ids, pad_token_id)
         
-        # Shift for language modeling
-        shift_logits = logits[:, :-1, :].contiguous()
-        shift_labels = input_ids[:, 1:].contiguous()
-        
-        # Calculate loss (ignore padding tokens)
-        loss = F.cross_entropy(
-            shift_logits.view(-1, shift_logits.size(-1)),
-            shift_labels.view(-1),
-            ignore_index=pad_token_id,
-            reduction="mean"
-        )
-        
-        # Backward pass
         optimizer.zero_grad()
         loss.backward()
         
-        # Gradient clipping
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         
         optimizer.step()
     
     return loss.item(), aux
+
+
+def train_step_tbptt(model, input_ids, device, optimizer, grad_clip, pad_token_id, chunk_size, scaler):
+    """
+    Training with TBPTT: process chunks sequentially with immediate backward.
+    
+    This is the memory-efficient version that processes long sequences.
+    """
+    B, S = input_ids.shape
+    
+    # Initialize model state
+    model.ssm.init_cache(batch_size=B, device=device)
+    from src.models.window_manager import WindowManager
+    window_mgr = WindowManager(
+        batch_size=B,
+        n_ssm_outputs=model.n,
+        m_input_tokens=model.m,
+        d_model=model.d_model,
+        device=device,
+    )
+    
+    total_loss = 0.0
+    total_tokens = 0
+    n_chunks = 0
+    all_write_steps = []
+    
+    # Process each chunk
+    for chunk_start in range(0, S, chunk_size):
+        chunk_end = min(chunk_start + chunk_size, S)
+        chunk_input_ids = input_ids[:, chunk_start:chunk_end]
+        
+        # Embed chunk
+        chunk_embeddings = model.embedding(chunk_input_ids)
+        
+        # Process chunk
+        chunk_logits, write_steps = model._process_chunk(
+            chunk_embeddings, window_mgr, global_offset=chunk_start
+        )
+        all_write_steps.extend(write_steps)
+        
+        # Compute loss for this chunk
+        if scaler is not None:
+            with torch.amp.autocast('cuda'):
+                chunk_loss = compute_loss(chunk_logits, chunk_input_ids, pad_token_id)
+        else:
+            chunk_loss = compute_loss(chunk_logits, chunk_input_ids, pad_token_id)
+        
+        # Count tokens in this chunk
+        chunk_tokens = (chunk_input_ids[:, 1:] != pad_token_id).sum().item()
+        total_loss += chunk_loss.item() * chunk_tokens
+        total_tokens += chunk_tokens
+        
+        # Backward for this chunk only!
+        if scaler is not None:
+            scaler.scale(chunk_loss).backward()
+        else:
+            chunk_loss.backward()
+        
+        # Truncate gradients (detach state for next chunk)
+        if chunk_end < S:
+            model.ssm.detach_cache()
+            window_mgr.detach()
+        
+        n_chunks += 1
+    
+    # Gradient clipping and optimizer step (after all chunks)
+    if scaler is not None:
+        if grad_clip > 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        if grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+        optimizer.step()
+    
+    optimizer.zero_grad()
+    
+    # Cleanup
+    model.ssm.clear_cache()
+    
+    # Compute average loss
+    avg_loss = total_loss / total_tokens if total_tokens > 0 else 0.0
+    
+    aux = {
+        'write_steps': all_write_steps,
+        'n_writes': len(all_write_steps),
+        'n_chunks': n_chunks,
+    }
+    
+    return avg_loss, aux
+
+
+def compute_loss(logits, input_ids, pad_token_id):
+    """Compute language modeling loss."""
+    # Shift for next token prediction
+    shift_logits = logits[:, :-1, :].contiguous()
+    shift_labels = input_ids[:, 1:].contiguous()
+    
+    # Cross entropy loss
+    loss = F.cross_entropy(
+        shift_logits.view(-1, shift_logits.size(-1)),
+        shift_labels.view(-1),
+        ignore_index=pad_token_id,
+        reduction="mean"
+    )
+    
+    return loss
 
 
 @torch.no_grad()
