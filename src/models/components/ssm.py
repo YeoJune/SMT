@@ -196,11 +196,16 @@ class SSMMemory(nn.Module):
                 x_norm = x_norm.squeeze(1)
             
             # Mamba step (updates states in-place)
+            # Returns (B, 1, D), need to squeeze to (B, D)
             x_out, _, _ = layer.step(
                 x_norm,
                 self._conv_states[i],
                 self._ssm_states[i],
             )
+            
+            # Squeeze sequence dimension from step() output
+            if x_out.dim() == 3:
+                x_out = x_out.squeeze(1)
             
             # Residual
             x = residual + x_out
