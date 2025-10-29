@@ -177,27 +177,25 @@ class SSMMemory(nn.Module):
             return self._forward_parallel(x)
         else:
             return self._forward_recurrent(x)
-    
     def _forward_recurrent(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Recurrent forward with state (efficient).
-        
-        Uses Mamba's step() method to update states in-place.
-        """
+        # 맨 처음 확인
+        print(f"[DEBUG] _forward_recurrent input x.shape: {x.shape}")
+
         for i, (layer, norm) in enumerate(zip(self.layers, self.norms)):
-            # Residual connection
             residual = x
             
-            # Pre-norm
+            print(f"[DEBUG] Layer {i} start: x.shape = {x.shape}")
+            
             x_norm = norm(x)
             
-            # ✅ 추가
+            print(f"[DEBUG] Layer {i} after norm: x_norm.shape = {x_norm.shape}")
+            
             if x_norm.dim() == 3:
+                print(f"[DEBUG] x_norm is 3D! size(1) = {x_norm.size(1)}")
                 if x_norm.size(1) == 1:
                     x_norm = x_norm.squeeze(1)
                 else:
-                    raise ValueError(f"norm returned unexpected shape: {x_norm.shape}, x was {x.shape}")
-                
+                    raise ValueError(f"x_norm has L={x_norm.size(1)} > 1!")
             # Mamba step (updates states in-place)
             x_out, _, _ = layer.step(
                 x_norm,
