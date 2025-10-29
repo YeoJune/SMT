@@ -191,6 +191,10 @@ class SSMMemory(nn.Module):
             # Pre-norm
             x_norm = norm(x)
             
+            # Ensure 2D for step() (RMSNorm may add dimension)
+            if x_norm.dim() == 3:
+                x_norm = x_norm.squeeze(1)
+            
             # Mamba step (updates states in-place)
             x_out, _, _ = layer.step(
                 x_norm,
@@ -203,6 +207,8 @@ class SSMMemory(nn.Module):
         
         # Final norm
         x = self.norm_f(x)
+        if x.dim() == 3:
+            x = x.squeeze(1)
         
         return x
     
