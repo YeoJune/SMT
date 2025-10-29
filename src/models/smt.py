@@ -301,6 +301,8 @@ class StrideMemoryTransformer(nn.Module):
         ssm_outputs_timeline = []  # SSM state at each step
         write_steps = []
         
+        # Save initial window state BEFORE processing
+        initial_input_tokens = window_mgr.input_tokens.clone()  # (B, m, D)
         current_ssm_outputs = window_mgr.ssm_outputs.clone()
         
         for t in range(chunk_len):
@@ -321,18 +323,22 @@ class StrideMemoryTransformer(nn.Module):
                 write_steps.append(global_t)
         
         # Phase 2: Construct all windows in parallel
-        # Get initial input tokens from window manager
-        initial_inputs = window_mgr.input_tokens[:, -(self.m-1):, :].contiguous()
+        # Concatenate: [previous m tokens] + [current chunk tokens]
+        # → This gives us all tokens needed for sliding windows
+        all_tokens = torch.cat([initial_input_tokens, chunk_embeddings], dim=1)
+        # (B, m, D) + (B, chunk_len, D) → (B, m+chunk_len, D)
         
-        # Pad chunk embeddings with initial inputs
-        padded_inputs = torch.cat([initial_inputs, chunk_embeddings], dim=1)
-        # (B, m-1+chunk_len, D)
+        # Create sliding windows: each window contains m consecutive tokens
+        # For t-th output, window = [tokens from t to t+m-1]
+        # We need chunk_len windows, starting from positions 0, 1, ..., chunk_len-1
+        input_windows = all_tokens.unfold(dimension=1, size=self.m, step=1)
+        # Input: (B, m+chunk_len, D)
+        # unfold(dim=1, size=m, step=1) creates sliding windows along dim=1
+        # Output: (B, chunk_len, D, m)
+        # Last dimension contains m consecutive values from dim=1
         
-        # Create sliding windows using unfold
-        input_windows = padded_inputs.unfold(dimension=1, size=self.m, step=1)
-        # (B, chunk_len, D, m)
         input_windows = input_windows.permute(0, 1, 3, 2).contiguous()
-        # (B, chunk_len, m, D)
+        # (B, chunk_len, D, m) → (B, chunk_len, m, D)
         
         # Stack SSM outputs for all steps
         ssm_outputs_batch = torch.stack(ssm_outputs_timeline, dim=1)
