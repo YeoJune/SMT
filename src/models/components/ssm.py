@@ -191,13 +191,20 @@ class SSMMemory(nn.Module):
             # Pre-norm
             x_norm = norm(x)
             
+            # ✅ 추가
+            if x_norm.dim() == 3:
+                if x_norm.size(1) == 1:
+                    x_norm = x_norm.squeeze(1)
+                else:
+                    raise ValueError(f"norm returned unexpected shape: {x_norm.shape}, x was {x.shape}")
+                
             # Mamba step (updates states in-place)
             x_out, _, _ = layer.step(
                 x_norm,
                 self._conv_states[i],
                 self._ssm_states[i],
             )
-            
+
             if x_out.dim() == 3:
                 x_out = x_out.squeeze(1)
             
