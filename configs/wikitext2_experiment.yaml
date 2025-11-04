@@ -95,7 +95,7 @@ training:
 # Evaluation Configuration
 # ============================================================================
 evaluation:
-  max_eval_batches: 100 # Limit for faster evaluation during training
+  max_eval_batches: 10 # Limit for faster evaluation during training
   eval_on_start: false
 
 # ============================================================================
