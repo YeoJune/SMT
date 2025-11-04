@@ -189,6 +189,9 @@ def train_step_tbptt(model, input_ids, device, optimizer, grad_clip, pad_token_i
     """
     B, S = input_ids.shape
     
+    # Zero gradients at the start (standard PyTorch practice)
+    optimizer.zero_grad()
+    
     # Initialize model state
     model.ssm.init_cache(batch_size=B, device=device)
     from src.models.window_manager import WindowManager
@@ -255,8 +258,6 @@ def train_step_tbptt(model, input_ids, device, optimizer, grad_clip, pad_token_i
         if grad_clip > 0:
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
         optimizer.step()
-    
-    optimizer.zero_grad()
     
     # Cleanup
     model.ssm.clear_cache()
