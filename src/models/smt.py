@@ -323,10 +323,10 @@ class StrideMemoryTransformer(nn.Module):
                 write_steps.append(global_t)
         
         # Phase 2: Construct all windows in parallel
-        # Concatenate: [previous m tokens] + [current chunk tokens]
+        # Concatenate: [previous m-1 tokens] + [current chunk tokens]
         # → This gives us all tokens needed for sliding windows
-        all_tokens = torch.cat([initial_input_tokens, chunk_embeddings], dim=1)
-        # (B, m, D) + (B, chunk_len, D) → (B, m+chunk_len, D)
+        all_tokens = torch.cat([initial_input_tokens[:, -(self.m-1):, :], chunk_embeddings], dim=1)
+        # (B, m-1, D) + (B, chunk_len, D) → (B, m-1+chunk_len, D)
         
         # Create sliding windows: each window contains m consecutive tokens
         # For t-th output, window = [tokens from t to t+m-1]
