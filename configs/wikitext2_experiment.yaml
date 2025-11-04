@@ -103,7 +103,7 @@ evaluation:
 # ============================================================================
 logging:
   # Console logging
-  logging_steps: 100
+  logging_steps: 5
 
   # Weights & Biases
   report_to: [] # ["wandb"] to enable
