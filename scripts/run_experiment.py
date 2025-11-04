@@ -151,11 +151,22 @@ def train_step(model, batch, device, optimizer, grad_clip, pad_token_id, chunk_s
 
 def train_step_standard(model, input_ids, device, optimizer, grad_clip, pad_token_id, scaler):
     """Standard training without TBPTT."""
+    # Check if batch has valid tokens
+    num_valid_tokens = (input_ids[:, 1:] != pad_token_id).sum().item()
+    if num_valid_tokens == 0:
+        # All padding batch - return zero loss without doing anything
+        return 0.0, {'n_writes': 0, 'write_steps': []}
+    
     # Forward pass
     if scaler is not None:
         with torch.amp.autocast('cuda'):
             logits, aux = model(input_ids, chunk_size=None, return_aux=True)
             loss = compute_loss(logits, input_ids, pad_token_id)
+        
+        # Check for invalid loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"⚠️  Warning: Invalid loss in standard training, skipping batch")
+            return 0.0, aux
         
         optimizer.zero_grad()
         scaler.scale(loss).backward()
@@ -169,6 +180,11 @@ def train_step_standard(model, input_ids, device, optimizer, grad_clip, pad_toke
     else:
         logits, aux = model(input_ids, chunk_size=None, return_aux=True)
         loss = compute_loss(logits, input_ids, pad_token_id)
+        
+        # Check for invalid loss
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"⚠️  Warning: Invalid loss in standard training, skipping batch")
+            return 0.0, aux
         
         optimizer.zero_grad()
         loss.backward()
@@ -213,6 +229,13 @@ def train_step_tbptt(model, input_ids, device, optimizer, grad_clip, pad_token_i
         chunk_end = min(chunk_start + chunk_size, S)
         chunk_input_ids = input_ids[:, chunk_start:chunk_end]
         
+        # Check if chunk has valid (non-padding) tokens
+        chunk_tokens = (chunk_input_ids[:, 1:] != pad_token_id).sum().item()
+        
+        if chunk_tokens == 0:
+            # Skip this chunk - all padding, no gradients needed
+            continue
+        
         # Embed chunk
         chunk_embeddings = model.embedding(chunk_input_ids)
         
@@ -229,8 +252,13 @@ def train_step_tbptt(model, input_ids, device, optimizer, grad_clip, pad_token_i
         else:
             chunk_loss = compute_loss(chunk_logits, chunk_input_ids, pad_token_id)
         
-        # Count tokens in this chunk
-        chunk_tokens = (chunk_input_ids[:, 1:] != pad_token_id).sum().item()
+        # Safety check for numerical stability
+        if torch.isnan(chunk_loss) or torch.isinf(chunk_loss):
+            print(f"⚠️  Warning: Invalid loss detected at chunk {chunk_start}-{chunk_end}, skipping")
+            # Don't update state for invalid chunks
+            continue
+        
+        # Accumulate loss (weighted by number of valid tokens)
         total_loss += chunk_loss.item() * chunk_tokens
         total_tokens += chunk_tokens
         
@@ -275,18 +303,32 @@ def train_step_tbptt(model, input_ids, device, optimizer, grad_clip, pad_token_i
 
 
 def compute_loss(logits, input_ids, pad_token_id):
-    """Compute language modeling loss."""
+    """
+    Compute language modeling loss with proper padding handling.
+    
+    Uses reduction='sum' and manual normalization to handle edge cases
+    where all tokens are padding (which would cause NaN with reduction='mean').
+    """
     # Shift for next token prediction
     shift_logits = logits[:, :-1, :].contiguous()
     shift_labels = input_ids[:, 1:].contiguous()
     
-    # Cross entropy loss
+    # Cross entropy loss with sum reduction
     loss = F.cross_entropy(
         shift_logits.view(-1, shift_logits.size(-1)),
         shift_labels.view(-1),
         ignore_index=pad_token_id,
-        reduction="mean"
+        reduction="sum"
     )
+    
+    # Manually compute average over valid tokens
+    num_valid_tokens = (shift_labels != pad_token_id).sum()
+    
+    if num_valid_tokens > 0:
+        loss = loss / num_valid_tokens
+    else:
+        # All padding: return zero loss (no gradient flow)
+        loss = loss * 0.0
     
     return loss
 
@@ -303,6 +345,12 @@ def evaluate(model, dataloader, device, pad_token_id, max_batches=None):
     for batch in tqdm(dataloader, desc="Evaluating", leave=False):
         input_ids = batch["input_ids"].to(device)
         
+        # Check if batch has valid tokens
+        batch_tokens = (input_ids[:, 1:] != pad_token_id).sum().item()
+        if batch_tokens == 0:
+            # Skip all-padding batch
+            continue
+        
         # Forward pass (return_aux=False, only returns logits)
         logits = model(input_ids, return_aux=False)
         
@@ -318,8 +366,12 @@ def evaluate(model, dataloader, device, pad_token_id, max_batches=None):
             reduction="sum"
         )
         
-        # Count non-padding tokens
-        batch_tokens = (shift_labels != pad_token_id).sum().item()
+        # Skip if loss is invalid
+        if torch.isnan(loss) or torch.isinf(loss):
+            print(f"⚠️  Warning: Invalid loss in evaluation batch, skipping")
+            continue
+        
+        # Accumulate
         total_loss += loss.item()
         total_tokens += batch_tokens
         
