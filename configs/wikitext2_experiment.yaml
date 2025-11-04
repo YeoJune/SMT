@@ -83,7 +83,7 @@ training:
   # Optimization
   learning_rate: 5.0e-4
   weight_decay: 0.01
-  max_grad_norm: 1.0
+  max_grad_norm: 5.0
 
   # Checkpointing
   save_steps: 1000
