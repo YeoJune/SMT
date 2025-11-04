@@ -305,16 +305,6 @@ class StrideMemoryTransformer(nn.Module):
         initial_input_tokens = window_mgr.input_tokens.clone()  # (B, m, D)
         current_ssm_outputs = window_mgr.ssm_outputs.clone()
         
-        # Initialize SSM outputs on first call if they're still zeros/random
-        # This ensures we have meaningful memory state from the start
-        if global_offset == 0:
-            # Process initial window to get first SSM outputs
-            window = window_mgr.get_window()
-            pooled, _ = self.attention_pooling(window)
-            ssm_output = self.ssm(pooled)
-            window_mgr.append_ssm(ssm_output)
-            current_ssm_outputs = window_mgr.ssm_outputs.clone()
-        
         for t in range(chunk_len):
             x_t = chunk_embeddings[:, t, :]
             window_mgr.append_input(x_t)

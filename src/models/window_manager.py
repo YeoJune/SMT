@@ -47,11 +47,10 @@ class WindowManager:
         
         # Circular buffers (efficient for sliding window)
         # Shape: (batch, capacity, d_model)
-        # Initialize with small random values to avoid numerical issues
-        self.ssm_outputs = torch.randn(
+        self.ssm_outputs = torch.zeros(
             batch_size, n_ssm_outputs, d_model,
             device=device, dtype=torch.float32,
-        ) * 0.02  # Small random initialization
+        )
         self.input_tokens = torch.zeros(
             batch_size, m_input_tokens, d_model,
             device=device, dtype=torch.float32,
@@ -118,8 +117,8 @@ class WindowManager:
         return window
     
     def reset(self):
-        """Reset to initial state with small random values."""
-        self.ssm_outputs = torch.randn_like(self.ssm_outputs) * 0.02
+        """Reset to initial state (zeros)."""
+        self.ssm_outputs.zero_()
         self.input_tokens.zero_()
         self.ssm_filled = 0
         self.input_filled = 0
