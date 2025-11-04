@@ -78,7 +78,7 @@ training:
   max_steps: 1000
 
   # TBPTT (Truncated Backpropagation Through Time)
-  chunk_size: 128 # Process sequences in chunks (null to disable)
+  chunk_size: 64 # Process sequences in chunks (null to disable)
 
   # Optimization
   learning_rate: 5.0e-4
