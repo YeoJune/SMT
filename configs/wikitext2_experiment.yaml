@@ -31,8 +31,8 @@ model:
   # Window configuration (Stride Memory specific)
   window:
     n_memory_tokens: 16 # Number of SSM memory tokens (n)
-    n_input_tokens: 48 # Number of recent input tokens (m)
-    stride: 16 # Update frequency (m/4)
+    n_input_tokens: 16 # Number of recent input tokens (m)
+    stride: 8 # Update frequency (m/4)
 
   # Transformer configuration
   transformer:
