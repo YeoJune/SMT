@@ -586,7 +586,7 @@ def main():
     print("=" * 80)
     
     # Load best model
-    best_checkpoint = torch.load(output_dir / "best_model.pt")
+    best_checkpoint = torch.load(output_dir / "best_model.pt", weights_only=False)
     model.load_state_dict(best_checkpoint['model_state_dict'])
     
     print("📊 Evaluating best model on full validation set...")
